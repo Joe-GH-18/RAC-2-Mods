@@ -102,7 +102,7 @@ Pass 9 is the composite: the world is drawn at offset `0x800000`, 2560x720, pitc
 ## Pads (seen 2026-11-01)
 `pt_pad` writes `+0x418` (digital 1 << 16 | digital 2) and `+0x41c` (right x, y, left x, y) over `CellPadData` +8, +0xa, +0xc.. and sets its length. Evdev needs a device every program sees; `xdotool --window` reached RPCS3 once at most. L1 in the game's first person: the Lancer has a green ring of its own, the gun's crosshair is `pt_hud`. Screen 512 x 416, `0xb0ae6c` with the white texture.
 
-Not tested: a full playthrough, a console, a real controller on the transit code, shots of other weapons actually coming out, enemy shots.
+Not tested: a full playthrough, a console, a real controller on the transit code, enemy shots.
 Keystone: a second `asm` on one `Ks` can raise `Invalid operand` on a good text (the build assembles each text twice), and that `Ks` then fails on everything, which makes any retry or bisection on it meaningless. `build.py` makes a new `Ks` per text. That was the cause of the errors once put down to `.long` words and to one harmless instruction.
 
 ## Standing in a portal (seen 2026-11-01, Insomniac Museum, level 21: real flat walls, hand-placed pair)
@@ -168,6 +168,15 @@ The RPCS3 abort of 15:09:55 did not come back in about 35 boots; cause unknown.
 - **The moon** stays open now: `+0x1308` is held at 1 once the pull has built up, and `+0x1340` leaves him alone for `MOON_SAFE` frames after he goes out. A portal on a slope he stands behind does not pull him: correct, he is behind its plane.
 - **The shot:** `pt_fire` runs `pt_shoot` on a pending block (`SHOT_PENDING`), then `pt_shots_step` carries a position at `shot_speed` (1.6 units a frame, at most `SHOT_MOST` frames) and copies the block over the portal on arrival, with what used to be the end of `pt_shoot`. `pt_shot_draw` draws blobs with `pt_fan` on a small portal block facing the camera.
 - `peek.py` reads 0x36000 bytes in 0.19 s, so the whole moby table can be read at once. The whole data segment takes 8 s, and diffing two of those by value found the item words.
+
+## Every weapon through a portal (seen 2026-11-02, evening; level 21 for the counts, 4 for live enemies)
+- **Rays:** some weapons hit along a ray with no moby to carry. `pt_wall_ray` used to tell every ray naming his moby that an opening is a hole, so Pulse and Blitz flew on past the wall with no hit. `WEAPON_RAYS` are the return addresses that go on from the far portal instead (`pt_ray_carry`), and what that ray finds is the hit. Only those: a moby's ground ray through a portal would put its floor in another room. Blitz's pellets are no shots: they appear at the ray's end in the frame they are fired.
+- **Lava** is droplets in a pool (`[0x1374470]`, 0x40 each, +0 place, +0x10 motion), each with a ray per frame. A droplet that crosses and meets nothing is moved to the far side, then its own code finds the enemies.
+- **Pulse** class `0x5d6` has no model, so it is taken by class before the test of the model.
+- **Thrown things** only aim with a ray (`0xc0e2c4`) and are mobys: `0x79` bomb glove, `0xac` visibomb, `0xcb` decoy, `0x1366` miniturret, `0xb58` spiderbot.
+- **Sheepinator:** not solved. `0xc2a690` looks for its target in the list `[0x15aece4]` from his moby's place, facing `+0xc0` (`+0xe0` is up), with a ray `0xc2a7a4` for line of sight. Standing him at the far portal for the length of the call did make the search cross (1123 of 1187), and the beam's rays hit the enemy, but no sheep. The hook was taken out again: it moved him every frame for nothing. What else it tests is not known.
+- **Targets:** many kind 5 mobys in level 4 are dormant and take nothing even from a direct hit. Test on ones that move. Health is variables `+0x20` for class `0xfb6`. `+0x194c` holds the last moby a carried ray hit.
+- Selection after a fresh boot can need a few tries: a test must read `+0x1248` and retry.
 
 ## Saves (read 2026-11-01; slot C built, not yet loaded by me)
 `USR-DATA` in `NPEA00386_RC2_SAVEDATA_*` is plain, with no checksum: `0x1d08`, `0x84d0`, then a global block `{0x1d00, 0}` and 27 or so level blocks `{0x84c8, 0}`, of chunks `{id, size, data}` padded to 4 and ended by id `0xffffffff`. Table of `{address, size, id, 0}` at `0x131ac94` (global) and `0x131aed4` (per level): `0x0` level `0x1329a3c`, `0x4` bolts `0x1482500` (the word behind it is not known, read all over the hero code), `0x9` ammunition `0x148182c`, `0xa` owned `0x1481a80`, `0xb` a second such array `0x1481ab8` (equal in both saves; the Weapons page's code reads it, which may be why setting `0xa` alone gave no tile), `0x28` a word per item at `0x1481af0`, `0xd` quick select `0x1481c40`, `0xe` planets `0x1482508`, `0x14` the map's list `0x1481bd0`. `0xb722d4(level)` unlocks a planet: its byte, and for levels up to `0x14` and `0x18` the first free place in the list (0 is free, so level 0 is never in it).

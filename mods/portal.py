@@ -55,7 +55,7 @@ filled in on the first frame from TUNING:
     +0x1300 the moon: +4 the portal out there, or 0, +8 frames left, +0xc that shot was at it,
     +0x1310 the step, +0x1320 and +0x1330 the ends of its ray, +0x1340 frames he is left alone,
     +0x1400 what has gone out, +0x1500 MOONS, +0x1700 the shots in the air, +0x1780 the portals they carry,
-    +0x1880 the block their blobs are drawn with, +0x18f0 mobys that went through, +0x18f4 the last one's class,
+    +0x1880 the block their blobs are drawn with, +0x18f0 mobys that went through, +0x18f4 the last one's class, +0x18f8 rays that went on, +0x1900 a ray's ends,
     +0xe60 the portal Ratchet stands in, or 0, +0xe64 the other one, +0xe68 the camera is shown behind the
     exit, +0xe6c the pair: 1 two walls, 2 a floor and a ceiling, 3 anything else, +0xe78 how he went through: 1 on the
     ground, 2 by the floor and ceiling,
@@ -119,7 +119,17 @@ SHOT_MOST = 60                     # frames in flight at the longest
 MOON_SAFE = 600                    # frames he is left alone after going out (+0x1340)
 MISSILE_CLASS, RYNO_CLASS, MISSILE_HEADING = 0x5DA, 0xED7, 0x30   # rocket tube, RYNO; in their variables a unit vector
 HOVERBOMB_CLASS = 0x5D8
-SHOT_CLASSES = (MISSILE_CLASS, RYNO_CLASS, HOVERBOMB_CLASS, 0x87A, 0xA9B, 0xCE4)   # model kind -1: missile, hoverbomb, chopper, plasma, gravity bomb
+PULSE_CLASS = 0x5D6                # a shot with no model at all
+SHOT_CLASSES = (MISSILE_CLASS, RYNO_CLASS, HOVERBOMB_CLASS, 0x87A, 0xA9B, 0xCE4,    # chopper, plasma, gravity bomb
+                0x79, 0xAC, 0xCB, 0x1366, 0xB58)    # bomb glove, visibomb, decoy, miniturret, spiderbot
+RAY_OUT = 0.1                      # a ray going on from the far portal starts this far off it
+# Weapons that find what they hit with a ray: the return address of each RAY. A ray of these crossing an
+# opening goes on from the other portal, and what it finds there is what the weapon hit.
+WEAPON_RAYS = (0xCE81C8, 0xCE40E4,     # pulse rifle, blitz gun: these name his moby
+               0xCD4728, 0xCF8D14,     # lava gun, tesla claw: these name the hand
+               0xC2A7A4, 0xC2AFD0, 0xC2B238, 0xC2B7CC)   # sheepinator
+RAY_LAVA = 0xCD4728                # from a droplet, +0 where it is and +0x10 its motion, to where it is going
+   # model kind -1: missile, hoverbomb, chopper, plasma, gravity bomb
 QUICK = 0x1481C40                  # eight words: the items of the Quick Select
 HUD_ICONS = 0x15784B0              # +0x1c {u16 id, versions, first sprite, 0}.., +0x20 sprite -> texture number
 HUD_TEXTURES = 0x1571938           # -> the texture entries, 0x24 each, +0 the offset in the RSX's memory
@@ -2475,6 +2485,13 @@ pt_moby_loop:                       # the first slot is Ratchet, and he has his 
     cmplw 3, 4
     bge pt_moby_loop
     lwz 4, 0x24(30)
+    cmpwi 4, 0
+    bne pt_moby_model
+    lhz 3, 0xaa(30)
+    cmpwi 3, {PULSE_CLASS}
+    bne pt_moby_loop
+    b pt_moby_class
+pt_moby_model:
     lis 5, {MAIN_HEAP_HA}
     lwz 6, {MAIN_HEAP_LO}(5)
     cmplw 4, 6
@@ -3368,19 +3385,153 @@ pt_wall_ray:
     lis 11, {HERO_MOBY_HA}
     lwz 11, {HERO_MOBY_LO}(11)
     cmpw 11, 6
-    bne pt_wall_ray_on
+    bne pt_ray_other                 # (r3 from, r4 to, r6 moby)
     addi 11, 10, 0x200
 """ + through_opening("pt_wall_ray_orange") + """
-    li 3, 0
-    blr
+    b pt_ray_his
 pt_wall_ray_orange:
     addi 11, 10, 0x280
 """ + through_opening("pt_wall_ray_on") + """
+pt_ray_his:
+    mflr 12
+""" + "".join(f"""
+    lis 9, {r >> 16}
+    ori 9, 9, {r & 0xFFFF}
+    cmpw 12, 9
+    beq pt_ray_carry
+""" for r in WEAPON_RAYS) + """
     li 3, 0
     blr
 pt_wall_ray_on:
     stdu 1, -0x2800(1)
     b {RAY_BODY}
+
+# The rays of other things: only the weapons', as a level's own ray through a portal would make a moby's
+# ground the floor of another room.
+pt_ray_other:
+    mflr 12
+""" + "".join(f"""
+    lis 9, {r >> 16}
+    ori 9, 9, {r & 0xFFFF}
+    cmpw 12, 9
+    beq pt_ray_weapon
+""" for r in WEAPON_RAYS) + """
+    b pt_wall_ray_on
+pt_ray_weapon:
+    addi 11, 10, 0x200
+""" + through_opening("pt_ray_weapon_orange") + """
+    b pt_ray_carry
+pt_ray_weapon_orange:
+    addi 11, 10, 0x280
+""" + through_opening("pt_wall_ray_on") + """
+# (r3 from, r4 to, r5-r7 as for RAY, r10 the state, r11 the portal, f3-f5 where it crosses, from the
+# portal's middle) the rest of the ray, from the other portal
+pt_ray_carry:
+    mflr 0
+    std 0, 0x10(1)
+    stdu 1, -0x90(1)
+    std 31, 0x60(1)
+    std 30, 0x68(1)
+    std 29, 0x70(1)
+    stw 5, 0x80(1)
+    stw 6, 0x84(1)
+    stw 7, 0x88(1)
+    stw 3, 0x78(1)
+    stw 4, 0x7c(1)
+    mr 31, 10
+    mr 30, 11
+    addi 29, 31, 0x200
+    cmpw 29, 30
+    bne pt_ray_far
+    addi 29, 31, 0x280
+pt_ray_far:
+    stfs 3, 0x1900(31)
+    stfs 4, 0x1904(31)
+    stfs 5, 0x1908(31)
+""" + sub(4, 0, 30, 0x10, 31, 0x1910) + """
+    addi 3, 31, 0x1900
+    addi 4, 31, 0x1920
+    mr 5, 30
+    mr 6, 29
+    bl pt_map
+    addi 3, 31, 0x1910
+    addi 4, 31, 0x1930
+    mr 5, 30
+    mr 6, 29
+    bl pt_map
+    lis 3, {POOL_HA}
+    addi 3, 3, {POOL_LO}
+    lfs 3, {P_ray_out}(3)
+""" + "".join(f"""
+    lfs 1, {0x10 + i}(29)
+    lfs 2, {0x1920 + i}(31)
+    fadds 1, 1, 2
+    lfs 2, {0x20 + i}(29)
+    fmadds 1, 2, 3, 1
+    stfs 1, {0x1920 + i}(31)
+    lfs 1, {0x10 + i}(29)
+    lfs 2, {0x1930 + i}(31)
+    fadds 1, 1, 2
+    stfs 1, {0x1930 + i}(31)
+""" for i in (0, 4, 8)) + """
+    li 3, 0
+    stw 3, 0x192c(31)
+    stw 3, 0x193c(31)
+    lwz 3, 0x18f8(31)                # for the tests: how many went on
+    addi 3, 3, 1
+    stw 3, 0x18f8(31)
+    addi 3, 31, 0x1920
+    addi 4, 31, 0x1930
+    lwz 5, 0x80(1)
+    lwz 6, 0x84(1)
+    lwz 7, 0x88(1)
+    bl pt_wall_ray_on
+    cmpwi 3, 0
+    beq pt_ray_missed
+    lis 4, {RAY_RESULT_HA}           # for the tests: where the last one that went on ended, and on what
+    addi 4, 4, {RAY_RESULT_LO}
+""" + "".join(f"""
+    lwz 5, {0x20 + i}(4)
+    stw 5, {0x1940 + i}(31)
+""" for i in (0, 4, 8)) + """
+    lwz 5, 0x18(4)
+    cmpwi 5, 0
+    beq pt_ray_carried
+    stw 5, 0x194c(31)
+    b pt_ray_carried
+pt_ray_missed:
+    # A droplet that met nothing goes on over there: its place and motion follow the ray, and its own
+    # code finds the enemies on the far side.
+    lis 4, {RAY_LAVA_HI}
+    ori 4, 4, {RAY_LAVA_LO}
+    ld 5, 0xa0(1)
+    cmpw 4, 5
+    bne pt_ray_carried
+    lwz 3, 0x78(1)
+    addi 3, 3, 0x10
+    addi 4, 31, 0x1950
+    mr 5, 30
+    mr 6, 29
+    bl pt_map
+    lwz 3, 0x78(1)
+    lwz 4, 0x7c(1)
+""" + "".join(f"""
+    lfs 1, {0x1930 + i}(31)
+    stfs 1, {i}(4)
+    lfs 2, {0x1950 + i}(31)
+    stfs 2, {0x10 + i}(3)
+    fsubs 1, 1, 2
+    stfs 1, {i}(3)
+""" for i in (0, 4, 8)) + """
+    li 3, 0
+pt_ray_carried:
+    ld 31, 0x60(1)
+    ld 30, 0x68(1)
+    ld 29, 0x70(1)
+    addi 1, 1, 0x90
+    ld 0, 0x10(1)
+    mtlr 0
+    blr
 
 # (r3 portal he is at, r4 the other) his mobys, for one draw, where the view needs them
 pt_copy_on:
@@ -4110,7 +4261,7 @@ def fields(args, addr):
     return dict(TUNING_WORDS=(max(v[0] for v in TUNING.values()) - 0x180) // 4 + 1, COOLDOWN_LATE=COOLDOWN - 10,
                 WALL_WORDS=len(WALLS), MOON_WORDS=MOON_LEVELS * 4,
                 GUN_SIZE=gun_size(), GUN_VERTICES=len(vertices), GUN_PIXELS=len(gunmesh.texture()), MESH_WORDS=len(mesh_block()) // 4,
-                GUN_SCALE_HI=GUN_SCALE >> 16, GUN_SCALE_LO=GUN_SCALE & 0xFFFF, ICON_BYTES=len(gunicon.texture()), PICTURE_BLOCKS=gunpicture.SIZE // 4, **pair("GUN", addr["gun"]), **pair("ICON", addr["icon"]),
+                RAY_LAVA_HI=RAY_LAVA >> 16, RAY_LAVA_LO=RAY_LAVA & 0xFFFF, GUN_SCALE_HI=GUN_SCALE >> 16, GUN_SCALE_LO=GUN_SCALE & 0xFFFF, ICON_BYTES=len(gunicon.texture()), PICTURE_BLOCKS=gunpicture.SIZE // 4, **pair("GUN", addr["gun"]), **pair("ICON", addr["icon"]),
                 **pair("PICTURE_DATA", addr["picture"]))
 
 
@@ -4186,7 +4337,7 @@ def pool(args):
                 clear=struct.pack(">I", 0xFF808080),
                 app_name=b"/dev_bdvd/PS3_GAME/USRDIR/RC2.ppu.self".ljust(40, b"\0"),
                 shot_speed=1.6, shot_blobs=(-1.4, 0.13, -0.7, 0.2, 0.0, 0.28, 0.0, 0.13), shot_tall=1.0 / 1.45,
-                rings=RINGS, cam_skip=0.2, view_near=4.0, view_cone=0.45,      # cosine of a little over half the view's diagonal
+                ray_out=RAY_OUT, rings=RINGS, cam_skip=0.2, view_near=4.0, view_cone=0.45,      # cosine of a little over half the view's diagonal
                 picture_entry=struct.pack(">9I", 0, 0x00018629, 0x00010303, 0x80040000, 0x0000AAE4, 0x02063E80,
                                           2 * gunpicture.SIZE << 16 | 2 * gunpicture.SIZE, 0x00100000, 0x00FF0000),
                 text_name=TEXT_GUN.ljust(16, b"\0"), text_about=TEXT_GUN_ABOUT.ljust(128, b"\0"), text_got=TEXT_GUN_GOT.ljust(48, b"\0"))
