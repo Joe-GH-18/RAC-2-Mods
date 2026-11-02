@@ -1,0 +1,166 @@
+# RC2 HD (BCES01503) reverse-engineering notes
+
+ELF: `RC2.ppu.elf`, md5 `f4b36fb839e5dc77125846f398b7e082`. All addresses are virtual addresses. Each finding says whether it was seen running or only read in the code.
+
+## Binary layout (static)
+- Program headers as in RC1: 0 R+X (ends `0x12d6668`, padding to `0x12e0000` is free: the cave), 1 RW (bss ends `0x1fd1090`), 2-4 unused PT_LOAD.
+- TOC `0x131d0f0`, OPD `0x12e3688+0x31a68`, 24412 functions.
+- Hero code: 24 copies by opcode signature (`0xbdfa0`, `0x141cf0`, ... `0x8392e0`, ... `0xab8800`). The engine from about `0xb00000` exists once.
+- The RPCS3 module loader puts system PRX modules from `0x2000000` (seen in the log).
+
+## Boot (seen)
+- **Without the menu (seen 2026-11-01):** with the mod, `RC2.ppu.self` boots directly. RPCS3 leaves argv[0] empty, so `0x10d9930(app, name, ..)` gets no name: `pt_name` gives it the path, which also passes the `GameAuthenticate` check (a 16-byte compare, `HDD boot game is corrupted` on a mismatch). The region `app+0xc0` is tested from a title id the menu route has and stays 0 (US, `BCUS98212|NPUA80644` saves): `pt_region` sets 1 at `0x10d9b30`. 44 s from start to a level. Jumping to a level during the intro crashes `Bink Snd`: go from the main menu (mode 3).
+- The Trilogy's `EBOOT.BIN` is a menu that spawns `/dev_bdvd/PS3_GAME/USRDIR/RC{1,2,3}.ppu.self` with argv[0] set to that path. The patched ELF works in the place of `RC2.ppu.self`.
+- Booting `RC2.ppu.self` directly: the game prints `App Name (null)` and dies on a read of 0 in main_thread (`0x10d9990`).
+- The menu takes input about 50 s after boot; the highlighted game is RC1, Right moves to RC2.
+- The title needs Start held about 0.5 s; the first press during the intro video opens the main menu, a second one goes back to the title.
+- Saves: `NPEA00386_RC2_SAVEDATA_*`. Slot B (2026-10-31 16:20) is the Flying Lab on Aranos, right at the start.
+
+## Game state (seen)
+- `0x156b064` is **not the level**, though it is read at 1141 sites: 0 in play, 3 in the pause menu, and 1/3/4 change at the title. Named GAME_MODE. So `0xb09478`'s test for 2 is a mode, not "level 2".
+- `0x156b070` frames in the level; hero position `0x147f260`. The HERO block reads zero until a level is in play.
+
+## The frame's draw
+- `0xb0f908` PreDraw takes no arguments. It kicks the SPU work (Tfrag, Tie, Shrub, Moby), and ends in `0xb59f4c` (waits `0x10c13c4`, draws). `0x10e3d88` pushes a named GPU marker, `0x10e3eec` pops it.
+- Its gameplay caller is not the plain `bl` at `0xb102f4` in `0xb10240`: that never ran in play, scenes or the title. `0xb101d8` (one `bl`, after setting `[0x1471844]` to `0x100ff`) is the likely one. The mod hooks PreDraw's first instruction, which caught play at once (seen).
+- Camera `0x146e280`: position `+0x140`, matrix `+0x370` (rows: view axis, left, up, zero; seen). `0xb05020` builds the view matrices from them, `0xb05600` the projection from the FOV at `0x1472130`.
+
+## `0xb09478`: not a world view (static)
+Runs instead of the plain draw when `[0x1471844] & 0x10` and GAME_MODE is 2. Armed by `0xb3e2b0`, which finds the nearest moby of a kind and fills the struct at `0x13406f0` (`+0` camera position, `+0x10` euler, `+0x20..0x5f` four world corners, `+0x60/64` UV scale, `+0x68` the moby). It draws the normal list, then **one moby** (`0xb59e7c(moby, 1)`) into a 512x512 target (`0xb086f8(9, 9, 1.0)` .. `0xb08ffc`) from that camera, and shows the texture on the four-cornered world quad through **`0x2ed20`**. Useful for the portal's surface; it does not draw the world.
+
+`0xbba610` (`monitor %d`) is UI as well: 14 menu panels with screen rectangles, drawn to textures (`0xb16fd0`/`0xb178f8`) and put on screen with `0xb0ae6c`.
+
+## The portal view's spike (`mods/viewtest.py`)
+Swapping matrix and position in CAMERA and calling `0xb05020` around the **whole** of PreDraw draws the world from that camera. Seen 2026-10-31 in the Flying Lab, at 60 FPS, no errors:
+- turned 180 degrees: geometry the player's camera had culled appears;
+- 13 units away, facing back: the room and Ratchet, complete;
+- 45 units away, outside the building: the whole pod from outside, with terrain;
+- alternating with the real camera every frame: 56-60 FPS, each frame complete.
+So culling follows the camera and occlusion is not tied to the player. One level only so far.
+
+## Items
+Table at `0x13222b0`, 0xd0 per item (static). Unlock bytes at `0x1481a80 + item`; a new game owns `0x06`, `0x1e` (Lancer, class `0x5d2`), `0x2a`, `0x2f`, `0x3e`, `0x56` (seen). The word at +0 has bit 0x1000000 on weapons: `0x09`..`0x5f`, upgraded forms included.
+Setting the byte of item `0x22` puts no tile on the Weapons page (seen), and no table of the grid's items is in the ELF's data: the page is built at run time. So the gun took over an item the page already has: see "The gun as the Clank Zapper".
+
+## The hidden frame: the portal view works (seen 2026-10-31)
+Drawing twice between one Begin and End only paints both views into the same surfaces: the renderer's ten pass buffers (`0x1410c1c`, the passes DepthPass .. HUD) are filled by PreDraw between BeginFrame and EndFrame. A view of its own needs a whole cycle:
+- Renderer object `[0x1410d78]` = `0x14256f0`, vtable `0x123a8e8`: `+0x14` BeginFrame `0x10ac4d0`, `+0x18` EndFrame `0x10b0f58`, called by `0xb085e0(1)` and `0xb08698`.
+- `renderer +0x1720` above zero: EndFrame counts it down and does **not flip** (and holds the buffer index in `0x1410d6c`). That is the engine's own way to draw a frame without showing it.
+- Surface descriptors at `renderer + 0x1b20 + index * 0x154`: `+8` colour offset (0 and `0x400000`), `+0x18` pitch `0x1400`, 1280x720.
+- Sequence that works, every frame, at 60.00 FPS: camera in, PreDraw, camera back, flip counter 1, both descriptors' offsets to ours, END, offsets back, `BEGIN(1)`, PreDraw, paste. The renderer's frame count `+0x14` must differ between the hidden frame and the real one: set it to its value before the hidden frame plus 2 (see "Hidden frame and frame count").
+- Paste: `0xb0ae6c(x, y, w, h, sx, sy, sw, sh; sp+0x70 colour 0x80808080, sp+0x7c texture)`. Screen space is 512x416. The source is in half-pixels of a 1280x720 texture: 0x280 x 0x168 is all of it.
+- Texture descriptor, 0x24 bytes, the RSX registers in order: offset, format `0x1a529` (A8R8G8B8 linear, local), address `0x30303`, control `0x80010000`, remap `0xaae4`, filter `0x02062000`, `w<<16|h`, `0x100000|pitch`, then bytes 0, 0xff.
+- Memory: gcm config at `0x1aba200` (local `0xc0000000`, size `0xf900000`, not 256 MB). Graphics heap `0x142554c` {base, current, end, end}: `0xc6529d38` of `0xcf900000` used in the Flying Lab. Surface used: offset `0xf500000`. An offset past the size is a fatal RSX error at once. The mod must lower the heap's end so that no level grows into it.
+- The HUD in the hidden frame: its pass buffer's write position is taken before the hidden PreDraw and put back after it, which drops the HUD and costs nothing else (seen).
+
+`0x10e4304` is a semaphore write, not the flip; the flip is `0x10e3b6c` (`_cellGcmSetFlipCommand`, called from EndFrame at `0x10b1654`).
+GAME_MODE 6 is the loading screen, and the frame counter keeps its old value then.
+
+## The portal mod (seen 2026-10-31, Flying Lab only)
+- **Collision ray:** `0x25468(from, to, 2, 0, 0)` -> hit, 2011 callers, one copy. Result at `0x156b340`: `+0x20` where it hit, `+0x40` the surface's normal, not normalised (the triangle's cross product), `+0x30`/`+0x50` corners of the triangle.
+- **Projection:** `0x1472120` near * 1024 (32), `+4` far * 1024, `0x1472130`/`0x1472134` tangents of half the field of view (0.63, 0.4882; agree with the matrix at `0x1472140`). A point's place on screen: `0.5 * (1 - (x / z) / tan)`.
+- **Pad block** `0x147a380`: `+0xa0` buttons held: Circle 0x20, Square 0x80, Cross 0x40, R1 8. The code writing it is in the per-level copies. The raw read is one call, `0x10bfcf8` -> `0x122479c` cellPadGetData (r30 port, data at sp+0x14c): the mod's hook. `CellPadData` +8 digital 1 (L3 2, Start 8), +0xa digital 2, +0x1e/+0x22 the pressure of Circle and Square.
+- **Hero:** ground height `+0x318` (seen equal to z standing), state `+0x2294` at `0x1481474` (0x13 the wrench swing, 2 walking, 6 falling). The hand: `HERO + 0x1220` -> moby, `+0x24` its model. Falling out of the level kills him and he respawns; the portals stay.
+- **Position writes skip the floor:** a write that moves him through a floor is not stopped. So the fling leaves gravity and landing to the game and adds only the carried motion, with a ray ahead for walls and the ground height to end it. Ledge grabs catch him out of a fling by themselves.
+- **QUAD** `0x2ed20(r3, 0, 0)`: +0 four corners, vec4, as a **triangle strip** (tables `0x1322478`/`0x1322488`), +0x40 four colours AABBGGRR, 0x80 full strength, alpha 0x80 is half see-through, +0x50 four u, v, +0x70/+0x80/+0x88 render states from `0x10d7df8`/`0x10d7ec4`/`0x10d7d98`, +0x78 the texture.
+- **Models in memory:** `model +0` -> mesh, `model +0x24` scale. Mesh: `+0` groups, `+4` second groups, `+8`/`+0xc` their lists, `+0x10`/`+0x14` vertex and index buffers as offsets from the GCM I/O address, `+0x18` vertex count << 16 and so on. Group 0x10 bytes: texture entry, first index, index count, flags. Texture entry 0x24 bytes: the RSX's registers in order; `0x00098829` is DXT5, nine mips. A vertex is 0x28 bytes: position, normal, u v, four weight bytes, four bone bytes. Bone 0 works for a whole gun.
+- **Main heap moves:** `0x1425528` {base, current, end, end} was at `0x40000000` in some boots and `0x50000000` in others, GCM I/O at `0x1aba204` with it. Nothing in main memory may be a fixed address. The RSX's memory is always `0xc0000000`.
+- Sign extension: `lis` of an address with the top bit set makes a 64-bit address; `clrldi 3, 3, 32` before using it, or RPCS3 stops with a narrowing error.
+
+Measured: a jump into a floor portal went in at 0.163 units a frame and rising and came out of an upright portal at 0.182; 60 FPS, 55-57 with both portals on screen. Gun out: Square never enters state 0x13 and Circle uses no ammunition; gun away: both work and the model is back (pointer checked). Pausing with portals up is fine. The patcher's output is byte for byte the build.
+
+## Levels and level changes (seen 2026-11-01)
+- `0x1329a3c` is the level loaded (0..26 all load).
+- **Go to level:** `0xb2810c(level)`; from outside, write `0x156b054` = level, then `0x156b050` = 1. No flight or menu needed, 16-75 s a level. **Each arrival autosaves into the loaded slot** (`SaveSystem_PS::AutoSaveGameData`): slot B became "Testing Facility Moon" in the first sweep. Copy the saves away first and put them back with RPCS3 closed.
+- Level types: 5, 10, 15, 25 are starship levels (hero state `+0x2294` = `0x31`, a hand moby exists, the state held in flight); 22, 23 are Giant Clank (state `0x56`, `HERO + 0x1220` = 0, Square gives state `0x5d`); both use Circle and Square. The gun stands down in them (state block `+0x40c`), with buttons passed on: read in the pad block while held, `0x20` and `0x80`, against 0 with the gun out on foot.
+- A moby's address can repeat between levels (`0x53b62700` in 21 and, stale, 22 and 23). A pointer kept over a level change must be dropped, not compared.
+- Sweep of levels 1-26 on the final build (Lancer fired in each): no fatal, every level still running, pictures clean, 60 FPS except 3 (58), 4 (42-52) and 6 (50-60) with two portals up; graphics heap peak `0xc7103ab8` (level 3), main heap peak `0x588d5110` (level 4), both far from the mod's limits. Portals placed everywhere on foot; 2 and 16 need the camera tilted down (right stick), as the first shots went into the sky. Walking through tried in level 13 only.
+
+## Hidden frame and frame count (cause seen, mechanism not found)
+Outside the Flying Lab, two portals turned the screen into stretched polygons, while no log, FPS or memory figure changed. Numbers alone called most levels clean: **look at the pictures.** With the hidden camera placed exactly on the real one the picture was perfect; 2-8 units off it was at its worst; 25-150 off the world was mostly right with some wrong textures. So the damage needs objects both cameras see, and heavy levels show it (518+ draws in pass 0, against 5-39 in the Flying Lab and level 24).
+Putting `+0x14` back gave both frames one number. Letting it run on fixed all 26 levels in the first build. It goes to its old value + 2 and END makes it + 3 by the frame's end, as the flip's buffer comes from this parity (held in `0x1410d6c` by the hidden END) and +2 per pair would always flip the same one.
+What reads the number was not traced: a per-object result stamped with it is the reading, unproven. END also works on it modulo 3 (`0xaaaaaaab` at `0x10b1a4c`), not followed. With +3 a frame each kind of frame now always lands on the same residue.
+
+Wrong on the way, so they are not tried again: the portal's surface covering the screen (with `SEE_THROUGH` they were dots, but that one solid screenshot was luck; six in a row were broken), sampling our surface, the near plane push, the level changes themselves (the lab stayed good after 27), distance between portals, and a race with the RSX. Two sets of pass buffers alternate with `+0x16fc`, and `[0x1aba218]` is the GCM control block (put, get, ref at +8): ref reads one behind `+0x1704` in eight of eight **atomic** reads. Two separate peeks are 50 ms apart and fake a lag of 6-11.
+Pass 9 is the composite: the world is drawn at offset `0x800000`, 2560x720, pitch `0x2800`, depth `0xf80000`, then one full-screen draw puts it on the surface from the descriptors. Pass objects: +0 base, +4 end, +8 write position, +0x14.. the last texture bound.
+
+## Mobys through portals (seen 2026-11-01)
+- **Table:** `0x156b278` begin, `+4` end, `0x100` each, slot 0 Ratchet. Empty slots hold junk (an update of `0x80`): test `+0x64` against the OPD and the model against the main heap `0x1425528` before following them.
+- **Fields:** `+0x10` position, `+0` centre of its bounding sphere * 1024 (`+0xc` radius; not a copy of the position), `+0x20` state byte (`0xfd`, `0xfe` dead or spent), `+0x24` model, `+0x64` update (OPD), `+0x68` variables (`0x80` apart), `+0xaa` class, `+0xb8` owner, `+0xc0` matrix rows. RC1's `+0x74`, `+0x78`, `+0xa6` do not hold here. Model `+0x46` is the kind: 5 enemies, 4 shots, 9 crates, 19 bolts.
+- **Lancer shot:** class `0xbfe`, update `0xe5f3b8` (shared), owner the hand moby. Variables: `+0x1c` homing target, `+0x20` motion per frame, `+0x2c` speed, `+0x34` a handle, `+0x38` a timer. It tests the wall on the frame it reaches it, so it goes through a frame early, on the step measured from its last position (`MOBY_TRACK` behind the mesh).
+- **Heading:** a copy of the motion in the variables is turned, per frame or per second, within 30%, three real floats, at most one 0. A looser test took speed, 0, handle for a vector along x and crashed in the shot's update. Only the Lancer's target is cleared: clearing every moby pointer zeroed a bolt's target at `+0x60`, read unchecked at `0xc15150` (bolt update `0xc14440`, class `0xd`). So only kinds 4 and 5 go through.
+- Seen: 12 of 12 shots aimed at a portal came out heading the exit's way; a walking enemy came out and went on; bolts are collected across a portal. The crash reports of RPCS3 name a stale address: read the registers.
+
+## Going through like a real portal (seen 2026-11-01)
+- **Camera state cannot be set.** `+0x158` is the yaw and `+0x140` the position, but both are copies, and so are the active camera object's matrix (`[CAM+0x190]` = `0x146f160`, `+0`) and position (`+0x30`, `+0x64`): written, they are back on the next frame. No float in `0x1400000..0x1620000` follows the angle by value or by delta. What makes it is in the per-level code. Do not look there again: use the stick.
+- **`pt_cam_*`:** one path after a transit, as an offset from Ratchet in the exit's frame. Behind the exit it is shown from the same place on the entry side (`pt_map` is its own inverse), so the camera stays in the first room and sees him through the portal, then crosses unseen. While behind it glides out, is pulled to the portal's axis (or it goes through the wall beside the opening) and turns to look through the portal, upright to the portal's up (the world's up can be parallel to the view: a NaN). The real camera is put back after each frame.
+- **The game's camera comes round by its own right stick:** `pt_pad_transit` holds rx until the view and the game's camera agree, and turns the left stick by the rest so forward stays forward; cosine and sine come from the two views, no angles. It needs a copy of the last pad (`len` 0 means no change, and the buffer is stale then). A 180 degree exit takes about a second.
+- **Hero:** yaw `+0x98`, wanted `+0x1a0`, heading `+0x1458`. On a floor portal he goes in standing, with `fall_start` of motion so he clears the exit.
+- **`pt_carry`:** a kind 5 moby on a floor portal sinks 22 frames, is turned through the pair and flies under gravity until the ray finds ground, which can be a crate. The ray stays off for 34 frames, as it starts behind the exit's wall.
+- `press.py` and a reading `peek.py` share `build/cmd`: at the same time they clash, and a read comes back garbled.
+
+## Pads (seen 2026-11-01)
+`pt_pad` writes `+0x418` (digital 1 << 16 | digital 2) and `+0x41c` (right x, y, left x, y) over `CellPadData` +8, +0xa, +0xc.. and sets its length. Evdev needs a device every program sees; `xdotool --window` reached RPCS3 once at most. L1 in the game's first person: the Lancer has a green ring of its own, the gun's crosshair is `pt_hud`. Screen 512 x 416, `0xb0ae6c` with the white texture.
+
+Not tested: a full playthrough, a console, a real controller on the transit code, shots of other weapons actually coming out, enemy shots.
+Keystone: a second `asm` on one `Ks` can raise `Invalid operand` on a good text (the build assembles each text twice), and that `Ks` then fails on everything, which makes any retry or bisection on it meaningless. `build.py` makes a new `Ks` per text. That was the cause of the errors once put down to `.long` words and to one harmless instruction.
+
+## Standing in a portal (seen 2026-11-01, Insomniac Museum, level 21: real flat walls, hand-placed pair)
+- **What stops Ratchet at a wall, two things.** Hero collision (per-level, `0xf4608` in one copy, `0xa93280` in level 21's) pushes him out with shared `0x278a8` (sphere, r6 moby, in the air) and `0x2a3b8` (capsule, r7 moby, on the ground); `0x2e298` does mobys, its result goes into the same hit. Contact lands in hero `+0x230` normal, `+0x240` point. And a ray ahead of him (`RAY`, r6 his moby) turns his walk along the wall: with only the push-out gone he stays at d=0.15 if placed there, but walking only slides. So both are hooked: `pt_wall_sphere`, `pt_wall_capsule`, `pt_wall_ray`. A ray of his crossing the opening finds nothing, the ground's ray does not cross. Camera collision passes his moby too (`0xad9e80`, about 10 calls a frame): it sees through openings as well.
+- **Near does not clip.** `0x1472120` drives `0x1472140` and the CPU's frustum only. The RSX draws with the renderer's `+0x60` projection (near 0.1, fixed), `+0xa0` view, `+0xe0` their product, set inside `BUILD_VIEW`. Raised past Ratchet, he stays. The old "near plane at the exit" never clipped anything; backface culling hid that. `pt_swap_in` now writes the exit's plane into `+0xe0`'s depth column (Lengyel's oblique near plane, z' = scale * distance - w, scale 1.4), so the plane cuts at any angle. This also ended the black at grazing angles. Museum walls draw from behind and showed black or a flat colour until this.
+- **Baked occlusion:** `BEGIN_FRAME` calls `0xb06960`, a grid lookup from `CAMERA_POS`, filling the mask `0x156b100` (`renderer +0x29c`). Objects: `+0x1e`/moby `+0x36`: byte in the mask, bit. `0x141ab6c` non-zero turns the test on. So hidden frames were culled for the game's camera. Clearing the byte works and costs far too much (level 4: 21 FPS, 6: 26, 13: 44). `pt_hidden_draw` calls `0xb06960` with the position 1 unit in front of the exit instead: 50-52, 60, 60.
+- **Crossing:** between two walls (`|normal z| < 0.3`) he crosses at his middle, with no cooldown, push or fling on the ground, velocity `+0xf0`, `+0x110` turned, and a ray lifts his feet out of a lower exit's floor. In the air: the flight as before. Other pairs: as before.
+- **Camera:** the transit's way goes at what he does plus `CAM_GLIDE` per frame, and what is left of pull and turn is that step's part of the way to the plane, instead of a fixed 0.3 units and 12% a frame. Going back mid-transit starts from what is on the screen (`+0xf00`). Once through it eases over when the game's camera is under a quarter turn off, or with `CAM_LATE` frames left: the game cannot get its camera behind him with a wall at his back (seen stuck at cos 0.27), so waiting for alignment hung on his helmet.
+- **`peek.py` tests:** stick values near 60 are inside the game's deadzone (about 0.5); with both tool words 0 the pad path does not feed the game. Facing the wall first and holding forward is far better than steering, a read takes 0.1-0.3 s. Video: `ffmpeg -f x11grab -window_id`. The vendor in level 13 is a moby and looks like a wall.
+
+## Mobys through a wall exit (solved 2026-11-01)
+Ratchet, his gun and every moby were missing from the view whenever the hidden camera stood behind a solid wall, and came back the moment it was 0.12 in front of the wall line. **Cause:** `0xb04630`, inside `BUILD_VIEW`, sends the renderer's `+0xe0` to all ten pass buffers (`0x1410c1c`) as vertex constant 0 (`0x441efc`, index, 16 words, column by column), and pass 0 gets `+0xa0` as constant 8. World draws send `+0xe0` again later (`0x10def00`, `0x10df6d8`), so they had the oblique plane; mobys draw with constant 0, which still held the plain matrix. The same frame had two depth mappings. `pt_swap_in` now sends the changed matrix to all ten after `BUILD_VIEW`. Patching `+0x60` as well is not needed and is gone.
+How it was found, and how to find the next one: a counter on the per-moby draw `0x89f40` showed the draw issued 63 times a second in both cases, so the CPU was innocent and every CPU theory before it was wasted. Measure which side of the RSX a thing is lost on first. "Hero only" was wrong too: the other things that showed were ties, and the claws seen "in the portal" were the real gun, in front of the plane.
+- **CPU culling:** `0x1466f48` holds six planes (a, b, c, d in world units): 0-3 sides, 4 far, 5 near. `FRUSTUM_NEAR` gets the exit's plane in hidden frames. Mobys test only the first five, tfrag and ties all six. Level 4 50-54 FPS, 6 and 13 60, better than the old near push, which also culled things beside the exit at steep angles. `0x1472120`, `BUILD_PROJECTION` and `NEAR_MARGIN` are out of the hidden frame. Without any near culling: 46-50 and 50-54.
+- **Attached mobys:** `HERO + 0x1220` is a table of 7, 0x50 apart, the hand first (`0x8bcc4`): 4 in use on a fresh boot. `pt_copy_on` takes all of them, each checked against the moby table. With Clank on his back in a real save: not tried, as tests load no save.
+- **Hold:** with him in the exit's opening the camera waits, so he can stand there from either side. The right stick lets it go for the rest of that transit (`+0xf40`). If the game's camera is over a quarter turn off, it eases at `CAM_LATE` frames left, about a second.
+- **Height:** the way through can pull the path far below him (seen 3.4 under a jump). Once through, its height goes back to 2.0 over him at 12% a frame.
+- Keystone's `Invalid operand` still comes and goes on good text, and `| tail` hides the exit status, so a failed build was tested as if new twice. Check the status and retry.
+
+The RPCS3 abort of 15:09:55 did not come back in about 35 boots; cause unknown.
+
+## A floor and a ceiling (seen 2026-11-01, level 21, also with real shots)
+- `+0xe6c` is the kind of pair: 1 two walls, 2 a floor and a ceiling (`|normal z| >= 0.9`, opposite signs). Up stays up through the pair, so he goes on falling in his own fall state: no fling, no push, velocity turned about z only. Other pairs (wall and floor, two floors) go the old way, with a hard turn and no standing half way.
+- `pt_wall_ray` drops a ray of his crossing an opening in either direction. Over a floor portal that is his ground ray, so he falls in by himself, feet first; coming out of a ceiling the ray starts above the plane. He crosses at his middle, up to `STACK_BEHIND` past the plane. Top speed 0.43 units a frame.
+- The hold (`pt_cam_step`) is for walls only: below a ceiling portal he can stand within `COPY_ZONE` and the camera would have waited for ever. Once the camera eases it finishes even if the game's camera is behind the exit's plane.
+- Seen: walking on, dropped on the middle (falls for ever, steering gets him out, 2.9 s), the museum's real ceiling at z 89.18: launched at it beside the opening he stops at 87.95, into it he comes out of the floor. Not seen: a jump into a real ceiling low enough to reach; a hand-placed one at 73.9 worked.
+- That ceiling looks black from a floor portal at some spots: pipes and lamp cords hang under it (clear from z 84). Real geometry, not a bug: move the exit down in steps to tell.
+- **`pt_shoot`:** a ray ending outside the level finds nothing. 150 units straight down from z 100 ends at -50, so steep shots at the floor missed (the note on levels 2 and 16 above is this). It now stops at coordinate 1 on each axis.
+- **The HUD's top left is the weapon's ammunition, not health.** The Lancer has 200 and uses 2 a press. Ammunition table: `0x148182c + item * 4` (Lancer, item `0x1e`: `0x14818a4`), seen on a build with only the pad and boot hooks. Near-vanilla test build: hooks of `pt_pad`, `pt_name`, `pt_region` only.
+- Tests: with a button in `+0x418` the tool sticks are used too, so 0 is full deflection: write 0x80. L1 and the right stick tilt the view, 255 is up.
+
+## The gun as the Clank Zapper (seen 2026-11-02)
+- **Item rows:** `0x1322a90 + item * 0xd0` (`0x1329a40` maps item to row, and is the identity for these). `+0x10` class, `+0x38` icon id, `+0x44` name text, `+0x84` ammunition a pack, `+0x8a` most. `+0x84` 0 makes it "Uses no ammo" everywhere, with the tile no longer red when empty. The Clank Zapper is item 9 (text `0xaa9`, description `0x2fbf`, class `0xed8`, icon `0xea99`), upgraded to `0x49`, the Clank Shocker (`0x1bdf`).
+- **It never goes into his hand:** a pick fires one zap from Clank and the Lancer stays held. So there is nothing to swap: `pt_pick` catches the choice, and the hand moby gets our mesh as before.
+- **Quick Select:** `0xb30138`. Left stick moves the cursor, letting go of Triangle picks. The pick is `stw r3, 0x22c8(r26)` at `0xb30c24` (r26 the hero, `+0x22c8` the item wanted, `+0x1248` the item in hand, i.e. `HAND + 0x28`). Refused while the row's model is not loaded (`0xb4bc8c`, `0xb4bd00` asks for it), so a test must hover a second. `0xb255ac` is what a new weapon runs: it takes the first free slot.
+- **Text:** `0xb28f38(id)`, a linear search of the language's table, 798 callers. `global/all_text`: eight language offsets, then per language {count, size} and {offset, id, -1, 0}. `\x0c`..`\x08` highlight; `\x10` Cross, `\x11` Circle, `\x12` Triangle, `\x15` R1 (Square `\x13` assumed, as no text says).
+- **Icons:** block `0x15784b0`: `+0x1c` {id, versions, first sprite, 0}, `+0x20` sprite -> texture number; entries at `[0x1571938]`. 64 x 64 DXT5, one grey and a shape in alpha, tinted when drawn (cyan, red when empty). They are the level's, so `pt_item` writes ours over the Zapper's on each new level.
+- **Pictures:** the Weapons page's big picture is no model, the moby pool is empty: it is a still, `global/hud/screen_weapons/screen_weapons[n]` (Zapper 38, Shocker 39), `.ps3` the texture entry, `.vram` 512 x 512 DXT5 with ten mips (n = 0 is 256 x 256). Table of the sets at `0x1345870` (4 weapons, 10 `help_weapons`). Read by `0x10d8d4c` at four pairs of sites with r31 the widget, r30 the picture. The page assumes 512: a 256 texture fills the top left quarter. Ours is 256 x 256 DXT1 (32 KB; `ro` holds 64) and each block is doubled on the way, in `pt_read_pixels`. The `help_weapons` set was not looked at.
+- **What the mod does not write back:** the Zapper's owned bytes and Quick Select word go into the save, which is harmless without the mod.
+
+## Moons (seen 2026-11-02)
+- A hit used to be a direction. Levels 2, 19 and 20 turned out wrong on inspection, and the reason: **some skies turn.** The moon of level 2 moves about 0.4 degrees a second with the view held still, and level 19's planet moved against the scenery between runs. Level 20 stood still over 25 s. What drives it was not found (the sky strings have no code references, a scan of `0x1400000..` over `peek.py` is far too slow). So a moon is now a height band (`MOONS`), which also means open sky at that height counts.
+- Real tangent across the screen is 0.868 (0.4882 * 16 / 9). `0x1472130` says 0.63, which is the 4:3 value and not what is on screen: measuring from screenshots with it is off by a third.
+- First-person aim: left stick turns, right stick only tilts (255 up), and full left stick is about 75 degrees a second.
+- Seen: all five levels register a hit, and in level 19 the whole run: a floor portal opened, Ratchet went out, fell to z -60, died and came back at the checkpoint with the portals closed. 60 FPS, no fatal.
+
+## Going through, 2026-11-02 (seen, level 21)
+- **Pairs of kind 3** (`+0xe6c`): anything but two walls or a floor and a ceiling. The opening works as for the others, but he leaves with the flight. Seen in both directions on a wall and a floor, and on two floors.
+- **Floors:** at a walk he crossed a 2-unit portal in 0.3 s, before his middle could sink to the plane. Floors now take him once `FLOOR_CROSS` (0.85) over the plane by the test's own height, just after he starts to sink, and from the plane, not from where he is, or he would land inside the exit.
+- **The dark frame:** within 0.1 of the entry's plane the near plane cuts the disc away and the wall fills the screen for one frame. The camera now goes over the last 0.2 at once.
+- **The smear:** a rim point beside the camera has a place on the screen far off, and every quad of the fan ran from the middle to the rim, so a whole wedge smeared. The inside is now four rings (`RINGS`), and depth is held at 0.5 and not 0.05 in `pt_screen`. What is left is a thin dark band at the screen's edge for about three frames.
+- **A transit outlived a level change** (`pt_plain` clears it only if PreDraw runs in the loading mode): `pt_new_level` clears it now.
+- A portal out of view gets no hidden frame (behind its plane, or under `view_cone` of the view axis, further than `view_near`). Level 4: 60 FPS with both up, at the landing place.
+- Twenty weapons fired at a portal in the museum: no fatal, 60 FPS. Only "no crash" is shown, as following shots with `peek.py` is too slow. Picking a weapon swaps correctly with the gun out, every time.
+- **Level 24 has no baked visibility:** `[0x156b200]` is 0 and `0xb06790` reads it with no test, so two portals up froze the game (read of 0x4; RPCS3 names `0xb069e4`, which is stale). `pt_hidden_draw` tests it now. Found only by the sweep with portals up in every level.
+- Filming: `ffmpeg -f x11grab -framerate 60 -window_id`, then luma differences per frame. A dark frame shows as a dip; a smear does not, look at it.
+
+## Saves (read 2026-11-01; slot C built, not yet loaded by me)
+`USR-DATA` in `NPEA00386_RC2_SAVEDATA_*` is plain, with no checksum: `0x1d08`, `0x84d0`, then a global block `{0x1d00, 0}` and 27 or so level blocks `{0x84c8, 0}`, of chunks `{id, size, data}` padded to 4 and ended by id `0xffffffff`. Table of `{address, size, id, 0}` at `0x131ac94` (global) and `0x131aed4` (per level): `0x0` level `0x1329a3c`, `0x4` bolts `0x1482500` (the word behind it is not known, read all over the hero code), `0x9` ammunition `0x148182c`, `0xa` owned `0x1481a80`, `0xb` a second such array `0x1481ab8` (equal in both saves; the Weapons page's code reads it, which may be why setting `0xa` alone gave no tile), `0x28` a word per item at `0x1481af0`, `0xd` quick select `0x1481c40`, `0xe` planets `0x1482508`, `0x14` the map's list `0x1481bd0`. `0xb722d4(level)` unlocks a planet: its byte, and for levels up to `0x14` and `0x18` the first free place in the list (0 is free, so level 0 is never in it).
+Items: table `0x13222b0`, item 0 at entry 0xa (the note under Items is 10 entries off): `+4` text id, `+0x4a` most ammunition.
+`tools/fullsave.py` copies a slot to a new one with all that set; it will not write over a slot. RPCS3's save screens cannot be pressed from the tools, so loading it is for a person.
