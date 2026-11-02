@@ -12,9 +12,10 @@ on the wall.
 | Circle | Shoot the blue portal |
 | Square | Shoot the orange portal |
 
-- A portal goes where the camera is looking, along the middle of the screen.
+- A portal goes where the camera is looking, along the middle of the screen: a shot flies there from his hand, and the portal opens when it arrives. The old one stays until then.
 - While the gun is out, Circle and Square do nothing else: no ammunition is used and the wrench stays
   put. Put the gun away and the weapon in Ratchet's hand is back as it was.
+- With the gun out the HUD's weapon panel is hidden; the weapon behind it comes back with its ammunition as it was.
 - The gun takes the Clank Zapper's place: its tile on the Weapons page, with its own name, icon and picture, and its slot in the Quick Select. Every save owns it from the next level on, and it goes into the first free Quick Select slot. If all eight are taken, put it there on the pause menu's Quick Select page. The Zapper itself is gone while the mod is installed. The gun uses no ammunition.
 - With one portal up it is a solid disc; with both up you can see through them.
 
@@ -43,15 +44,16 @@ The patcher only accepts the one executable it was made for (it compares checksu
 ## Shooting the moon
 
 Five levels have a moon or planet in the sky (2, 7, 19, 20 and 26). Shoot a portal at it, then the other
-one anywhere: for ten seconds that one opens on space and pulls in Ratchet, enemies, shots and crates near
-it, faster the closer they are, until something goes out or it runs out. Ratchet dies of it as of a fall;
-what else goes out is gone for the rest of the level. Shooting a portal somewhere else ends it.
+one anywhere: that one opens on space and pulls in Ratchet, enemies, shots and crates near it, faster the
+closer they are. It stays open until you shoot a new portal or leave the level. Ratchet dies of it as of a
+fall and is left alone for ten seconds after coming back, so move away if he comes back beside it; what else
+goes out is gone for the rest of the level. Portals stay when he dies, this pair or any other.
 
 ## Limits
 
 - Ratchet, enemies and weapon shots go through. Crates, bolts and everything else do not, and the wall behind a portal stays solid for them.
 - To fire a weapon through a portal, pick that weapon: the portals stay, but while the gun is out Circle shoots portals.
-- Twenty weapons were fired into a portal with no crash, but only the Lancer's shots were seen coming out. A homing shot may keep turning towards its target, and beams or instant hits do not go through at all.
+- Shots counted through a real pair from 14 units: Lancer 12 of 12, Minirocket Tube 4 of 4, Seeker Gun 4 of 4, Plasma Coil 4 of 4, Bouncer 1 of 1, the Chopper's discs, and the RYNO's rockets 4 of 12, as a salvo spreads wider than the opening. Blitz Gun, Hoverbomb and Gravity Bomb got none through in that test, and Pulse Rifle and Lava Gun are beams with nothing to carry.
 - Enemies that walk onto a floor portal drop through it and fly out of the other one until they land. This was tried with a few enemies, not every kind; one forced through while asleep and far away stayed frozen in the air.
 - Between two walls Ratchet can stop halfway, on either side, and step back; the right stick sends the camera on through. With a floor and a ceiling he drops in and falls on through the pair, for ever if you let him: steer to get out. With a wall and a floor, or two floors, he goes in the same way but comes out flying, with no stopping halfway.
 - A moon counts by its height in the sky, as some skies turn: open sky at the same height counts as the moon too.

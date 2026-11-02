@@ -49,6 +49,7 @@ Machine paths are in the untracked files `rc2_elf.path` and `rpcs3.path`.
 - Hand-placing a test: portals are just state words, so `peek.py` can put a perfect pair anywhere without aiming.
 - Tests take the gun out with `w 1fd1504 00000001` (`+0x404`), or by the Quick Select: hold Triangle, left stick, let go; the weapon's model must have loaded first, so hold about a second. A menu cursor is the left stick. Info popups in the museum swallow Triangle.
 - `li` takes at most 32767: a bigger constant is `Invalid operand`, as is any other wrong operand. A branch out of the code cave has to be a `b`, not a conditional one.
+- A shot's portal comes frames after the button (`pt_fire`): wait before reading it. `+0x18f0` counts mobys that went through a portal, `+0x18f4` is the last one's class: use those to prove a weapon, sampling the table by `peek.py` misses fast shots.
 - Test walls in the Insomniac Museum (level 21): flat, level floor. A portal needs a real wall to prove anything; level 13's "walls" near the start are a step and a vendor (a moby).
 - A moby from the table is not safe to touch by a pattern: junk slots look like mobys, and guesses about what a class keeps in its variables crashed the game twice (a handle taken for a vector, a bolt's target zeroed). Say which kinds and fields are known.
 - Do not use `pkill -f` with a pattern that appears in your own command line: it kills your shell. Close RPCS3 with `pkill -TERM -x AppRun.wrapped`.

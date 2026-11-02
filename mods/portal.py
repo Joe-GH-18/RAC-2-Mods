@@ -9,6 +9,7 @@ PRE_DRAW, once a frame:
 
   input    Circle shoots the blue portal, Square the orange one: the level's ray (RAY) along the
            camera's view axis. A portal is a position, the wall's normal and two axes in the wall.
+           It is worked out at once and comes into being when the shot, flying from his hand, gets there.
   model    The moby in his hand gets a copy of its model's header with our mesh in it (gunmesh.py),
            and its own model back when the gun is put away. Nothing of the game's model changes.
   travel   Ratchet inside a portal's ellipse, moving into it: he comes out of the other one with
@@ -45,14 +46,16 @@ filled in on the first frame from TUNING:
     +0x408 the buttons last frame, +0x40c non-zero: no gun here (ship, Giant Clank), +0x410 the mesh's place
     and the main heap's new end, +0x414 the level last frame, +0x418 the tools' buttons (digital 1 << 16 | digital 2),
     +0x41c their sticks (right x, y, left x, y), +0x420 booted without the Trilogy's menu, +0x440 the white texture, +0x4f0 the moby in his hand and
-    +0x4f4 its model, +0x500 the copy of the model's header, +0x700 the mesh, +0x740 its groups,
+    +0x4e8 the row of the weapon behind the gun, +0x4ec its ammunition a pack, +0x4f4 its model, +0x4f8 its scale, +0x500 the copy of the model's header, +0x700 the mesh, +0x740 its groups,
     +0x760 its texture, +0x900.. scratch of the mobys that go through (+0x900 place, +0x910 motion,
     +0x920 where it meets the portal, +0x930, +0x940, +0x950), +0xa00.. the camera of a transit and
     +0xb00..0xc7f what is falling through a floor portal (their comments below), +0xd00 the real camera's matrix
     +0xe00 tuning of the walls (WALLS); +0xf00 the pose a transit is showing, before the side is chosen,
     +0xf40 the right stick has let the camera go in this transit,
     +0x1300 the moon: +4 the portal out there, or 0, +8 frames left, +0xc that shot was at it,
-    +0x1310 the step, +0x1320 and +0x1330 the ends of its ray, +0x1400 what has gone out, +0x1500 MOONS,
+    +0x1310 the step, +0x1320 and +0x1330 the ends of its ray, +0x1340 frames he is left alone,
+    +0x1400 what has gone out, +0x1500 MOONS, +0x1700 the shots in the air, +0x1780 the portals they carry,
+    +0x1880 the block their blobs are drawn with, +0x18f0 mobys that went through, +0x18f4 the last one's class,
     +0xe60 the portal Ratchet stands in, or 0, +0xe64 the other one, +0xe68 the camera is shown behind the
     exit, +0xe6c the pair: 1 two walls, 2 a floor and a ceiling, 3 anything else, +0xe78 how he went through: 1 on the
     ground, 2 by the floor and ceiling,
@@ -106,6 +109,17 @@ ITEM_GUN, ITEM_GUN_UP = 0x09, 0x49 # the Clank Zapper and the Clank Shocker it u
 ITEM_ROW, ITEM_ROW_SIZE = 0x1322A90, 0xD0     # item -> row by 0x1329a40, which is the same number
 ROW_AMMO_PACK, ROW_AMMO_MOST = 0x84, 0x8A     # u16; 0 in the first: a weapon with no ammunition
 OWNED, EVER = 0x1481A80, 0x1481AB8 # a byte per item
+GUN_SCALE = 0x3E555555             # model +0x24, the Lancer's: the model his hand holds is filled in place
+                                   # by each weapon, and a rocket launcher's scale makes the gun a quarter of its size
+HAND_ITEM = HERO + 0x1248          # the item in his hand. Its row with no ammunition hides the HUD's weapon panel
+SHOT_SLOT, SHOT_SLOT_2, SHOT_SLOT_SIZE = 0x1700, 0x1740, 0x40    # per colour: +0 frames left, +4 the portal, +8 at the moon, +0x10 where, +0x20 the step
+SHOT_PENDING, SHOT_PENDING_SIZE = 0x1780, 0x80   # the portal as it will be when the shot gets there
+SHOT_BLOB = 0x1880                 # a portal's block for pt_fan, to draw the shot with
+SHOT_MOST = 60                     # frames in flight at the longest
+MOON_SAFE = 600                    # frames he is left alone after going out (+0x1340)
+MISSILE_CLASS, RYNO_CLASS, MISSILE_HEADING = 0x5DA, 0xED7, 0x30   # rocket tube, RYNO; in their variables a unit vector
+HOVERBOMB_CLASS = 0x5D8
+SHOT_CLASSES = (MISSILE_CLASS, RYNO_CLASS, HOVERBOMB_CLASS, 0x87A, 0xA9B, 0xCE4)   # model kind -1: missile, hoverbomb, chopper, plasma, gravity bomb
 QUICK = 0x1481C40                  # eight words: the items of the Quick Select
 HUD_ICONS = 0x15784B0              # +0x1c {u16 id, versions, first sprite, 0}.., +0x20 sprite -> texture number
 HUD_TEXTURES = 0x1571938           # -> the texture entries, 0x24 each, +0 the offset in the RSX's memory
@@ -166,6 +180,7 @@ COPY_SAVED, COPY_LAST = 0x1000, 0x1000 + 0x60 * HELD_COUNT    # as they were, 0x
 # what drives that was not found): a turning sky keeps its height. Open sky at that height counts too.
 MOONS = {2: (55, 7), 7: (16, 11), 19: (19, 10), 20: (41, 15), 26: (22, 8)}
 MOON_LEVELS = 27
+SHOT_BLOBS, SHOT_MIDDLE = 4, 3     # how far behind the head (in steps of flight) and its radius; the last is its white middle
 RINGS = (0.93, 0.74, 0.54, 0.3, 0.0)         # the inside of a portal, as parts of its radius
 TEXT_GUN = b"Portal Gun"
 TEXT_GUN_ABOUT = b"\x0cPortal Gun\x08: \x11 shoots a blue portal, \x13 an orange one. Go in one and out of the other."
@@ -714,16 +729,22 @@ pt_input:
     bne pt_new_level
     cmplw 3, 4
     bge pt_same_level
+    b pt_respawned                   # the count starts again when he dies: the portals stay for that
 pt_new_level:
     li 3, 0
     stw 3, 0x200(31)
     stw 3, 0x280(31)
+    stw 3, 0x1304(31)
+    stw 3, 0x1308(31)
+    stw 3, 0x1340(31)
+pt_respawned:
+    li 3, 0
     stw 3, 0xc(31)
     stw 3, 0x4f0(31)                 # the moby in his hand went with the level
     stw 3, 0xa00(31)                 # a transit's way means nothing here
     stw 3, 8(31)
-    stw 3, 0x1304(31)
-    stw 3, 0x1308(31)
+    stw 3, {SHOT_SLOT}(31)
+    stw 3, {SHOT_SLOT_2}(31)
     bl pt_item
     li 3, 0
     addi 4, 31, 0x1400
@@ -763,13 +784,14 @@ pt_not_ship:
     andi. 3, 26, {BLUE}
     beq pt_not_blue
     addi 3, 31, 0x200
-    bl pt_shoot
+    bl pt_fire
 pt_not_blue:
     andi. 3, 26, {ORANGE}
     beq pt_input_done
     addi 3, 31, 0x280
-    bl pt_shoot
+    bl pt_fire
 pt_input_done:
+    bl pt_shots_step
     addi 1, 1, 0x70
     ld 0, 0x10(1)
     mtlr 0
@@ -1013,6 +1035,14 @@ pt_model:
     cmpwi 3, 0
     beq pt_model_on
 pt_model_off:
+    lwz 4, 0x4e8(31)
+    cmpwi 4, 0
+    beq pt_model_row_back
+    lwz 5, 0x4ec(31)
+    sth 5, {ROW_AMMO_PACK}(4)
+    li 5, 0
+    stw 5, 0x4e8(31)
+pt_model_row_back:
     lwz 3, 0x4f0(31)
     cmpwi 3, 0
     beq pt_model_done
@@ -1022,6 +1052,8 @@ pt_model_off:
     bne pt_model_forget              # not in his hand any more: that memory may be something else now
     lwz 4, 0x4f4(31)
     stw 4, 0x24(3)
+    lwz 4, 0x4f8(31)
+    stw 4, 0x2c(3)
 pt_model_forget:
     li 3, 0
     stw 3, 0x4f0(31)
@@ -1034,19 +1066,43 @@ pt_model_on:
     lwz 4, 0x24(3)
     addi 5, 31, 0x500
     cmpw 4, 5
-    beq pt_model_done
+    beq pt_model_held
     cmpwi 4, 0
     beq pt_model_done
     stw 3, 0x4f0(31)
     stw 4, 0x4f4(31)
+    lwz 6, 0x2c(3)
+    stw 6, 0x4f8(31)
     addi 3, 31, 0x500
     li 5, 0x200
     bl {MEMCPY}
     addi 3, 31, 0x700
     stw 3, 0x500(31)
+    lis 3, {GUN_SCALE_HI}
+    ori 3, 3, {GUN_SCALE_LO}
+    stw 3, 0x524(31)
     lwz 3, 0x4f0(31)
     addi 4, 31, 0x500
     stw 4, 0x24(3)
+pt_model_held:                       # the moby has the scale as well, as each weapon set it
+    lis 4, {GUN_SCALE_HI}
+    ori 4, 4, {GUN_SCALE_LO}
+    stw 4, 0x2c(3)
+    # the weapon he is not holding shows nothing in the HUD: its row says it has no ammunition until he does
+    lwz 4, 0x4e8(31)
+    cmpwi 4, 0
+    bne pt_model_done
+    lis 4, {HAND_ITEM_HA}
+    lwz 4, {HAND_ITEM_LO}(4)
+    mulli 4, 4, {ITEM_ROW_SIZE}
+    lis 5, {ITEM_ROW_HA}
+    addi 5, 5, {ITEM_ROW_LO}
+    add 4, 4, 5
+    lhz 5, {ROW_AMMO_PACK}(4)
+    stw 5, 0x4ec(31)
+    li 5, 0
+    sth 5, {ROW_AMMO_PACK}(4)
+    stw 4, 0x4e8(31)
 pt_model_done:
     addi 1, 1, 0x70
     ld 0, 0x10(1)
@@ -1216,6 +1272,8 @@ pt_shoot:
     stdu 1, -0x70(1)
     std 25, 0x60(1)
     mr 25, 3
+    li 3, 0
+    stw 3, 0(25)
     lis 3, {CAMERA_POS_HA}
     addi 3, 3, {CAMERA_POS_LO}
     lis 4, {CAMERA_MATRIX_HA}
@@ -1339,23 +1397,6 @@ pt_have_reference:
 """ + add_scaled(4, 0x20, 3, 25, 0x20, 25, 0x10) + """
     li 3, 1
     stw 3, 0(25)
-    li 3, 0                          # the way of a transit went through the portal that moved
-    stw 3, 0xa00(31)
-    lwz 3, 0x130c(31)
-    cmpwi 3, 0
-    beq pt_shot_wall
-    li 3, 0
-    stw 3, 0x130c(31)
-    stw 3, 0x1308(31)
-    stw 25, 0x1304(31)
-    b pt_shoot_done
-pt_shot_wall:
-    lwz 3, 0x1304(31)                # the portal on the moon was shot somewhere else: that is the end
-    cmpw 3, 25
-    bne pt_shoot_done
-    li 3, 0
-    stw 3, 0x1304(31)
-    stw 3, 0x1308(31)
     b pt_shoot_done
     # Nothing hit: the sky, and in some levels the moon. A portal there is a portal far out on the
     # line to it, facing back, so that the other one looks down on the level from out there.
@@ -1396,6 +1437,157 @@ pt_shoot_sky:
     b pt_shoot_place
 pt_shoot_done:
     ld 25, 0x60(1)
+    addi 1, 1, 0x70
+    ld 0, 0x10(1)
+    mtlr 0
+    blr
+
+# (r3 the portal) the shot leaves his hand: where it will end is known now, the portal comes when it gets there
+pt_fire:
+    mflr 0
+    std 0, 0x10(1)
+    stdu 1, -0x80(1)
+    std 24, 0x60(1)
+    std 25, 0x68(1)
+    std 23, 0x70(1)
+    mr 25, 3
+    addi 24, 31, {SHOT_SLOT}
+    addi 23, 31, {SHOT_PENDING}
+    addi 3, 31, 0x200
+    cmpw 3, 25
+    beq pt_fire_slot
+    addi 24, 24, {SHOT_SLOT_SIZE}
+    addi 23, 23, {SHOT_PENDING_SIZE}
+pt_fire_slot:
+    mr 3, 23
+    bl pt_shoot
+    stw 25, 4(24)
+    lwz 3, 0x130c(31)
+    stw 3, 8(24)
+    li 3, 0
+    stw 3, 0x130c(31)
+    lwz 3, 0(23)
+    cmpwi 3, 0
+    beq pt_fire_nowhere
+""" + "".join(f"""
+    lwz 3, {0x10 + i}(23)
+    stw 3, {0x20 + i}(24)
+""" for i in (0, 4, 8)) + """
+    b pt_fire_from
+pt_fire_nowhere:                     # the sky: it just goes on until it is gone
+    lis 3, {CAMERA_POS_HA}
+    addi 3, 3, {CAMERA_POS_LO}
+    lis 4, {CAMERA_MATRIX_HA}
+    addi 4, 4, {CAMERA_MATRIX_LO}
+    lfs 3, {RAY_LENGTH}(31)
+""" + add_scaled(3, 0, 3, 4, 0, 24, 0x20) + """
+pt_fire_from:
+    lis 3, {HAND_HA}
+    lwz 3, {HAND_LO}(3)
+    cmpwi 3, 0
+    bne pt_fire_hand
+    lis 3, {HERO_MOBY_HA}
+    lwz 3, {HERO_MOBY_LO}(3)
+pt_fire_hand:
+""" + "".join(f"""
+    lfs 1, {0x10 + i}(3)
+    stfs 1, {0x10 + i}(24)
+    lfs 2, {0x20 + i}(24)
+    fsubs 2, 2, 1
+    stfs 2, {0x20 + i}(24)
+""" for i in (0, 4, 8)) + dot(3, 24, 0x20, 24, 0x20, 4) + """
+    fsqrts 3, 3
+    lis 3, {POOL_HA}
+    addi 3, 3, {POOL_LO}
+    lfs 4, {P_shot_speed}(3)
+    fdivs 4, 3, 4
+    fctiwz 4, 4
+    stfd 4, -0x10(1)
+    lwz 3, -0xc(1)
+    addi 3, 3, 1
+    cmpwi 3, {SHOT_MOST}
+    ble pt_fire_frames
+    li 3, {SHOT_MOST}
+pt_fire_frames:
+    stw 3, 0(24)
+    extsw 3, 3
+    std 3, -0x10(1)
+    lfd 4, -0x10(1)
+    fcfid 4, 4
+    frsp 4, 4
+""" + "".join(f"""
+    lfs 1, {0x20 + i}(24)
+    fdivs 1, 1, 4
+    stfs 1, {0x20 + i}(24)
+""" for i in (0, 4, 8)) + """
+    ld 23, 0x70(1)
+    ld 24, 0x60(1)
+    ld 25, 0x68(1)
+    addi 1, 1, 0x80
+    ld 0, 0x10(1)
+    mtlr 0
+    blr
+
+# the shots in the air, and a portal for each that got there
+pt_shots_step:
+    mflr 0
+    std 0, 0x10(1)
+    stdu 1, -0x80(1)
+    std 23, 0x60(1)
+    std 24, 0x68(1)
+    std 25, 0x70(1)
+    addi 24, 31, {SHOT_SLOT}
+    addi 23, 31, {SHOT_PENDING}
+    bl pt_shot_step
+    addi 24, 24, {SHOT_SLOT_SIZE}
+    addi 23, 23, {SHOT_PENDING_SIZE}
+    bl pt_shot_step
+    ld 23, 0x60(1)
+    ld 24, 0x68(1)
+    ld 25, 0x70(1)
+    addi 1, 1, 0x80
+    ld 0, 0x10(1)
+    mtlr 0
+    blr
+
+pt_shot_step:
+    lwz 3, 0(24)
+    cmpwi 3, 0
+    beqlr
+    mflr 0
+    std 0, 0x10(1)
+    stdu 1, -0x70(1)
+    addi 3, 3, -1
+    stw 3, 0(24)
+""" + add_scaled(24, 0x10, 0, 24, 0x20, 24, 0x10).replace("fmadds 1, 2, 0, 1", "fadds 1, 1, 2") + """
+    cmpwi 3, 0
+    bne pt_shot_stepped
+    lwz 3, 0(23)
+    cmpwi 3, 0
+    beq pt_shot_stepped
+    lwz 25, 4(24)
+    mr 3, 25
+    mr 4, 23
+    li 5, 0x50
+    bl {MEMCPY}
+    li 3, 0                          # the way of a transit went through the portal that moved
+    stw 3, 0xa00(31)
+    lwz 3, 8(24)
+    cmpwi 3, 0
+    beq pt_shot_wall
+    li 3, 0
+    stw 3, 0x1308(31)
+    stw 3, 0x1340(31)
+    stw 25, 0x1304(31)
+    b pt_shot_stepped
+pt_shot_wall:
+    lwz 3, 0x1304(31)                # the portal on the moon was shot somewhere else: that is the end
+    cmpw 3, 25
+    bne pt_shot_stepped
+    li 3, 0
+    stw 3, 0x1304(31)
+    stw 3, 0x1308(31)
+pt_shot_stepped:
     addi 1, 1, 0x70
     ld 0, 0x10(1)
     mtlr 0
@@ -2017,6 +2209,7 @@ pt_draw:
     mflr 0
     std 0, 0x10(1)
     stdu 1, -0x70(1)
+    std 24, 0x60(1)
     lwz 3, 0x200(31)
     cmpwi 3, 0
     beq pt_draw_orange
@@ -2033,6 +2226,70 @@ pt_draw_orange:
     lwz 28, 0x3a4(31)
     bl pt_portal
 pt_draw_done:
+    addi 24, 31, {SHOT_SLOT}
+    lwz 28, 0x3a0(31)
+    bl pt_shot_draw
+    addi 24, 24, {SHOT_SLOT_SIZE}
+    lwz 28, 0x3a4(31)
+    bl pt_shot_draw
+    ld 24, 0x60(1)
+    addi 1, 1, 0x70
+    ld 0, 0x10(1)
+    mtlr 0
+    blr
+
+# (r24 the shot, r28 its colour) a round blob facing the camera with a white middle, and two behind it.
+# pt_fan draws a portal's disc, so this is a little portal block.
+pt_shot_draw:
+    lwz 3, 0(24)
+    cmpwi 3, 0
+    beqlr
+    mflr 0
+    std 0, 0x10(1)
+    stdu 1, -0x70(1)
+    addi 30, 31, {SHOT_BLOB}
+    lis 3, {POOL_HA}
+    addi 3, 3, {POOL_LO}
+    lfs 1, {P_one}(3)
+    stfs 1, 0x1f4(31)
+    lfs 1, {P_zero}(3)
+    stfs 1, 0x1f8(31)
+    li 27, 0
+pt_shot_blobs:
+    lis 3, {POOL_HA}
+    addi 3, 3, {POOL_LO}
+    addi 3, 3, {P_shot_blobs}
+    slwi 4, 27, 3
+    add 3, 3, 4
+    lfs 8, 0(3)
+    lfs 9, 4(3)
+    stfs 9, 0x1fc(31)
+""" + add_scaled(24, 0x10, 8, 24, 0x20, 30, 0x10) + """
+    lfs 9, 0x1fc(31)
+    lis 3, {CAMERA_MATRIX_HA}
+    addi 3, 3, {CAMERA_MATRIX_LO}
+    lis 4, {POOL_HA}
+    addi 4, 4, {POOL_LO}
+    lfs 8, {P_shot_tall}(4)
+    fmuls 8, 8, 9
+""" + "".join(f"""
+    lfs 1, {0x10 + i}(3)
+    fmuls 1, 1, 9
+    stfs 1, {0x30 + i}(30)
+    lfs 1, {0x20 + i}(3)
+    fmuls 1, 1, 8
+    stfs 1, {0x40 + i}(30)
+""" for i in (0, 4, 8)) + """
+    addi 3, 31, 0x440
+    mr 4, 28
+    cmpwi 27, {SHOT_MIDDLE}
+    bne pt_shot_colour
+    lwz 4, 0x3a8(31)                 # the middle is white
+pt_shot_colour:
+    bl pt_fan
+    addi 27, 27, 1
+    cmpwi 27, {SHOT_BLOBS}
+    blt pt_shot_blobs
     addi 1, 1, 0x70
     ld 0, 0x10(1)
     mtlr 0
@@ -2230,7 +2487,15 @@ pt_moby_loop:                       # the first slot is Ratchet, and he has his 
     cmpwi 26, {KIND_ENEMY}
     beq pt_moby_take
     cmpwi 26, {KIND_SHOT}
-    bne pt_moby_loop
+    beq pt_moby_take
+    lhz 3, 0xaa(30)                  # and the shots with no kind in their model, by class
+""" + "".join(f"""
+    cmpwi 3, {c}
+    beq pt_moby_class
+""" for c in SHOT_CLASSES) + """
+    b pt_moby_loop
+pt_moby_class:
+    li 26, {KIND_SHOT}
 pt_moby_take:
     lwz 3, 0xc(28)
     stw 27, 0xc(28)
@@ -2302,6 +2567,16 @@ pt_moby_moving:
     fcmpu 0, 10, 1
     blt pt_moby_no
     lfs 1, {P_mob_reach}(3)
+    lhz 4, 0xaa(30)                  # these look well ahead and blow up before they get to a wall
+    cmpwi 4, {MISSILE_CLASS}
+    beq pt_moby_far
+    cmpwi 4, {RYNO_CLASS}
+    beq pt_moby_far
+    cmpwi 4, {HOVERBOMB_CLASS}
+    bne pt_moby_near
+pt_moby_far:
+    lfs 1, {P_mob_reach_far}(3)
+pt_moby_near:
     fsubs 1, 1, 11
     fcmpu 0, 10, 1
     bgt pt_moby_no
@@ -2311,6 +2586,13 @@ pt_moby_moving:
     bge pt_moby_ahead
     fmr 12, 9
 pt_moby_ahead:
+    lhz 4, 0xaa(30)                  # and go from the plane, however many steps away it is
+    cmpwi 4, {MISSILE_CLASS}
+    beq pt_moby_inside
+    cmpwi 4, {RYNO_CLASS}
+    beq pt_moby_inside
+    cmpwi 4, {HOVERBOMB_CLASS}
+    beq pt_moby_inside
     lfs 1, {P_one}(3)
     fcmpu 0, 12, 1
     ble pt_moby_inside
@@ -2336,6 +2618,11 @@ pt_moby_inside:
     li 3, 1
     b pt_moby_done
 pt_moby_jump:
+    lwz 3, 0x18f0(31)                # for the tests: how many went through, and the last one's class
+    addi 3, 3, 1
+    stw 3, 0x18f0(31)
+    lhz 3, 0xaa(30)
+    stw 3, 0x18f4(31)
 
     addi 3, 31, 0x920
     addi 4, 31, 0x940
@@ -2410,9 +2697,28 @@ pt_moby_vars:
     lis 4, {LANCER_SHOT_HA}
     addi 4, 4, {LANCER_SHOT_LO}
     cmplw 3, 4
-    bne pt_vars_scan
+    bne pt_vars_not_lancer
     li 3, 0
     stw 3, {LANCER_TARGET}(23)
+    b pt_vars_scan
+pt_vars_not_lancer:
+    # a missile flies along a unit vector, which no test of its motion can tell
+    lhz 3, 0xaa(30)
+    cmpwi 3, {MISSILE_CLASS}
+    beq pt_vars_missile
+    cmpwi 3, {RYNO_CLASS}
+    bne pt_vars_scan
+pt_vars_missile:
+    addi 3, 23, {MISSILE_HEADING}
+    addi 4, 31, 0x950
+    mr 5, 25
+    mr 6, 24
+    bl pt_map
+""" + "".join(f"""
+    lwz 4, {0x950 + i}(31)
+    stw 4, {MISSILE_HEADING + i}(23)
+""" for i in (0, 4, 8)) + """
+    b pt_vars_done
 pt_vars_scan:
     li 22, 0
 pt_vars_next:
@@ -3193,9 +3499,9 @@ pt_copy_next:
 """
 
 
-# The moon. With one portal out there the other one opens on space, and for a while it pulls in what
-# it can see: Ratchet, enemies, shots and crates, faster the closer they are. He dies of it, as of a
-# fall, and that ends it. Nothing is freed, as what a moby's owner expects of it is not known: what
+# The moon. With one portal out there the other one opens on space and pulls in what it can see:
+# Ratchet, enemies, shots and crates, faster the closer they are, until a new portal replaces either of
+# them or the level ends. He dies of it, as of a fall. Nothing is freed, as what a moby's owner expects of it is not known: what
 # goes out is hidden and held far away (pt_moon_parked). Bolts stay: they die of being moved.
 CODE += """
 pt_moon:
@@ -3221,15 +3527,23 @@ pt_moon_other:
     lwz 3, 0(29)
     cmpwi 3, 0
     beq pt_moon_done                 # only the moon's so far: nothing to go through
-    lwz 3, 0x1308(31)
+    lwz 3, 0x1308(31)                # counted down only for the pull to build up: it stays open
     cmpwi 3, 0
     bgt pt_moon_running
     li 3, {MOON_FRAMES}
 pt_moon_running:
+    cmpwi 3, 1
+    ble pt_moon_open
     addi 3, 3, -1
+pt_moon_open:
     stw 3, 0x1308(31)
+    lwz 3, 0x1340(31)                # just out, he comes back near it: not straight in again
     cmpwi 3, 0
-    ble pt_moon_close
+    beq pt_moon_him
+    addi 3, 3, -1
+    stw 3, 0x1340(31)
+    b pt_moon_mobys
+pt_moon_him:
     # him
     lis 3, {HERO_POS_HA}
     addi 3, 3, {HERO_POS_LO}
@@ -3252,13 +3566,8 @@ pt_moon_running:
 pt_moon_he_is_out:
     lfs 1, {MOON_DEATH}(31)
     stfs 1, 8(28)
-pt_moon_close:
-    li 3, 0
-    stw 3, 0(30)
-    stw 3, 0(29)
-    stw 3, 0x1304(31)
-    stw 3, 0x1308(31)
-    b pt_moon_done
+    li 3, {MOON_SAFE}
+    stw 3, 0x1340(31)
     # the rest: the same care as pt_mobys, as empty slots hold anything
 pt_moon_mobys:
     lis 3, {MOBY_TABLE_HA}
@@ -3801,7 +4110,7 @@ def fields(args, addr):
     return dict(TUNING_WORDS=(max(v[0] for v in TUNING.values()) - 0x180) // 4 + 1, COOLDOWN_LATE=COOLDOWN - 10,
                 WALL_WORDS=len(WALLS), MOON_WORDS=MOON_LEVELS * 4,
                 GUN_SIZE=gun_size(), GUN_VERTICES=len(vertices), GUN_PIXELS=len(gunmesh.texture()), MESH_WORDS=len(mesh_block()) // 4,
-                ICON_BYTES=len(gunicon.texture()), PICTURE_BLOCKS=gunpicture.SIZE // 4, **pair("GUN", addr["gun"]), **pair("ICON", addr["icon"]),
+                GUN_SCALE_HI=GUN_SCALE >> 16, GUN_SCALE_LO=GUN_SCALE & 0xFFFF, ICON_BYTES=len(gunicon.texture()), PICTURE_BLOCKS=gunpicture.SIZE // 4, **pair("GUN", addr["gun"]), **pair("ICON", addr["icon"]),
                 **pair("PICTURE_DATA", addr["picture"]))
 
 
@@ -3870,12 +4179,13 @@ def pool(args):
                 white=texture(WHITE - 0xC0000000, 0x00040004, 16), one=1.0, half=0.5, zero=0.0, inner=0.93, outer=1.07,
                 chest=0.7, mesh=mesh_block(), ray_aiming=0.5, ray_edge=1.0, three=3.0, cam_step=1.0 / 30, cam_height=2.0, cam_rise=0.12, cam_aligned=0.01, vec_tiny=0.0001, at_a=0.2447, at_b=0.0663,
                 quarter_pi=math.pi / 4, half_pi=math.pi / 2, pi=math.pi, fall_start=-0.3, fall_gain=0.012, mob_gravity=0.012,
-                mob_foot=0.6, mob_reach=0.7, mob_behind=-0.5, mob_floor=1.4, mob_out=1.0,
+                mob_foot=0.6, mob_reach=0.7, mob_reach_far=3.5, mob_behind=-0.5, mob_floor=1.4, mob_out=1.0,
                 vec_near=0.09, per_second=60.0,
                 # colours are AABBGGRR, 0x80 being full strength
                 blue=struct.pack(">I", 0xFF803810), orange=struct.pack(">I", 0xFF104880),
                 clear=struct.pack(">I", 0xFF808080),
                 app_name=b"/dev_bdvd/PS3_GAME/USRDIR/RC2.ppu.self".ljust(40, b"\0"),
+                shot_speed=1.6, shot_blobs=(-1.4, 0.13, -0.7, 0.2, 0.0, 0.28, 0.0, 0.13), shot_tall=1.0 / 1.45,
                 rings=RINGS, cam_skip=0.2, view_near=4.0, view_cone=0.45,      # cosine of a little over half the view's diagonal
                 picture_entry=struct.pack(">9I", 0, 0x00018629, 0x00010303, 0x80040000, 0x0000AAE4, 0x02063E80,
                                           2 * gunpicture.SIZE << 16 | 2 * gunpicture.SIZE, 0x00100000, 0x00FF0000),
