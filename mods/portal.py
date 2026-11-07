@@ -2,7 +2,8 @@
 
 The gun takes the Clank Zapper's place: its tile on the Weapons page, its slot in the Quick Select, its
 name, icon and picture (pt_item, pt_text, pt_pick, pt_read_*). The Zapper never goes into his hand: picking
-it fires a zap from Clank. So pt_pick takes that pick for the gun, and any other pick puts the gun away.
+it fires a zap from Clank. So pt_pick takes that pick for the gun, and any other pick puts the gun away;
+pt_switch does the same for the Weapons page and for Triangle twice.
 Everything runs from hooks in shared code, so the mod needs none in the per-level copies of the hero:
 the pad read, which hides Circle and Square from the game while the gun is in hand, and the entry of
 PRE_DRAW, once a frame:
@@ -56,6 +57,10 @@ filled in on the first frame from TUNING:
     +0x1310 the step, +0x1320 and +0x1330 the ends of its ray, +0x1340 frames he is left alone,
     +0x1400 what has gone out, +0x1500 MOONS, +0x1700 the shots in the air, +0x1780 the portals they carry,
     +0x1880 the block their blobs are drawn with, +0x18f0 mobys that went through, +0x18f4 the last one's class, +0x18f8 rays that went on, +0x1900 a ray's ends,
+    +0x1a00 pt_switch: the game mode last time, +0x1a04 frames into the pause, +0x1a08 the gun was out last time,
+    +0x1a0c the weapon the gun was out over when put away (Triangle twice to it brings the gun), or 0,
+    +0x1a10 the weapon it was put away for, +0x1a14 the weapon under the gun, +0x1a18 the request dealt with already,
+    +0x1a1c the weapon in hand last time,
     +0xe60 the portal Ratchet stands in, or 0, +0xe64 the other one, +0xe68 the camera is shown behind the
     exit, +0xe6c the pair: 1 two walls, 2 a floor and a ceiling, 3 anything else, +0xe78 how he went through: 1 on the
     ground, 2 by the floor and ceiling,
@@ -138,12 +143,22 @@ TEXT_LOOKUP, TEXT_WORD = 0xB28F38, 0x3C800134 # (r3 id) -> the string; lis r4, 0
 TEXT_BODY = TEXT_LOOKUP + 4
 TEXT_NAME, TEXT_NAME_UP, TEXT_ABOUT, TEXT_GOT, TEXT_UPGRADED, TEXT_AMMO = 0xAA9, 0x1BDF, 0x2FBF, 0x12B4, 0x12B6, 0x12E3
 PICK, PICK_WORD = 0xB30C24, 0x907A22C8        # stw r3, 0x22c8(r26): the Quick Select's choice, r26 the hero
-WANTED = 0x22C8                    # hero: the item he goes on to take out
+WANTED = 0x22C8                    # hero: the item he goes on to take out, a request; 0 once it is done
+WANTED_ITEM = HERO + WANTED
+# The Weapons page (pause menu): its choice, which it gives WANTED as the menu closes; on opening the
+# menu it is the weapon in hand. The page takes only weapons (row +8 = 0): the Zapper's is 3.
+SELECTION = 0x15B2F90
+ROW_TYPE, GADGET_TYPE = 8, 3
+ROW_TYPE_GUN = ITEM_ROW + ITEM_GUN * ITEM_ROW_SIZE + ROW_TYPE
+ROW_TYPE_GUN_UP = ITEM_ROW + ITEM_GUN_UP * ITEM_ROW_SIZE + ROW_TYPE
+MODE_PAUSE = 3                     # GAME_MODE in the pause menu, where PRE_DRAW does not run
+PAUSE_FRAMES = 30                  # how long into a pause the page's choice is still the game's own
 READ_FILE = 0x10D8D4C              # (r3 path, r4 where, r5 most bytes) -> above 0 if it worked
 PICTURE_READS = ((0xBCFA3C, 0xBCFA7C), (0xBD04B8, 0xBD04E8), (0xBD06A4, 0xBD06D4), (0xBD0868, 0xBD0898))   # header, pixels
 PICTURES_WEAPONS, PICTURES_HELP = 4, 10   # screen_weapons, help_weapons, in the table at 0x1345870
 PICTURE_ZAPPER, PICTURE_SHOCKER = 38, 39
 HERO_STATE = HERO + 0x2294
+GLIDE_STATE = 8                    # the Heli-Pack's glide (Cross held in the air, Clank on his back)
 SHIP_STATE = 0x31                  # in the starship levels
 LEVEL = 0x1329A3C                  # the level loaded
 HERO_MOBY = HERO + 0x2290
@@ -181,6 +196,7 @@ WALL_CAPSULE, WALL_CAPSULE_WORD = 0x2A3B8, 0xF821D741   # (r3 centre, f1 radius,
 WALL_SPHERE_BODY, WALL_CAPSULE_BODY = WALL_SPHERE + 4, WALL_CAPSULE + 4
 RAY_WORD, RAY_BODY = 0xf821d801, RAY + 4
 HERO_VELOCITY, HERO_MOVED = 0xF0, 0x110      # from RC1's +0xe0 and +0x100
+HERO_VEL_Z = HERO + HERO_VELOCITY + 8   # the game's own up and down speed: gravity about 0.006 a frame, falls top out at 0.43
 HELD_STEP, HELD_COUNT = 0x50, 7     # the table of what hangs on him, from HAND
 HELD_END = HERO + 0x1220 + HELD_STEP * HELD_COUNT
 COPY_MOBYS = 1 + HELD_COUNT        # drawn on the other side at most
@@ -919,11 +935,202 @@ pt_pick:
     beq pt_pick_gun
     li 11, 0
     stw 11, 0x404(12)
+    stw 11, 0x1a0c(12)               # chosen here: the gun no longer stands behind the last weapon
     stw 3, {WANTED}(26)
     blr
 pt_pick_gun:
     li 11, 1
     stw 11, 0x404(12)
+    lwz 11, {WANTED}(26)             # a switch under way is not a new choice for pt_switch
+    stw 11, 0x1a18(12)
+    blr
+
+# Weapon switches pt_pick does not see: the Weapons page and Triangle twice (the game's last weapon,
+# 0x1329a9c, read in the per-level copies). The page ends in a request in WANTED; Triangle twice only
+# shows in the weapon in hand, the gun's own weapon standing for the gun as the last one. It runs
+# from the pad read, which goes on in the pause menu, where PRE_DRAW does not. r31 the state block;
+# r3..r12 only.
+pt_switch:
+    lis 3, {GAME_MODE_HA}
+    lwz 3, {GAME_MODE_LO}(3)
+    cmpwi 3, {MODE_PAUSE}            # the Weapons page shows the weapon under the gun with its ammunition:
+    bne pt_switch_rows               # the row gets it back, and pt_switch_gun or pt_model takes it again.
+    lis 4, {WANTED_ITEM_HA}          # Only once the page has opened (it asks for the weapon in hand): the
+    lwz 4, {WANTED_ITEM_LO}(4)       # HUD's weapon panel is decided as the pause begins, and stays
+    cmpwi 4, 0
+    beq pt_switch_rows
+    lwz 4, 0x4e8(31)
+    cmpwi 4, 0
+    beq pt_switch_rows
+    lwz 5, 0x4ec(31)
+    sth 5, {ROW_AMMO_PACK}(4)
+    li 5, 0
+    stw 5, 0x4e8(31)
+pt_switch_rows:
+    li 6, {GADGET_TYPE}              # the page takes the gun as a weapon, everything else as a gadget
+    cmpwi 3, {MODE_PAUSE}
+    bne pt_switch_type
+    li 6, 0
+pt_switch_type:
+    lis 4, {ROW_TYPE_GUN_HA}
+    stw 6, {ROW_TYPE_GUN_LO}(4)
+    lis 4, {ROW_TYPE_GUN_UP_HA}
+    stw 6, {ROW_TYPE_GUN_UP_LO}(4)
+    lis 4, {HAND_ITEM_HA}
+    lwz 7, {HAND_ITEM_LO}(4)         # r7 the weapon in hand, under the gun if it is out
+    lwz 8, 0x404(31)                 # r8 the gun is out
+    lis 4, {SELECTION_HA}
+    lwz 9, {SELECTION_LO}(4)         # r9 the page's choice
+    li 10, {ITEM_GUN}                # r10 the gun's item
+    lis 4, {OWNED_HA}
+    addi 4, 4, {OWNED_LO}
+    lbz 4, {ITEM_GUN_UP}(4)
+    cmpwi 4, 0
+    beq pt_switch_item
+    li 10, {ITEM_GUN_UP}
+pt_switch_item:
+    # early in a pause, with the gun out: the page shows the gun chosen, not the weapon under it
+    cmpwi 3, {MODE_PAUSE}
+    bne pt_switch_frames
+    lwz 4, 0x1a00(31)
+    cmpwi 4, {MODE_PAUSE}
+    beq pt_switch_paused
+    li 4, 0
+    stw 4, 0x1a04(31)
+pt_switch_paused:
+    lwz 4, 0x1a04(31)
+    cmpwi 4, {PAUSE_FRAMES}
+    bge pt_switch_frames
+    addi 4, 4, 1
+    stw 4, 0x1a04(31)
+    cmpwi 8, 0
+    beq pt_switch_frames
+    cmpw 9, 7
+    bne pt_switch_frames
+    mr 9, 10
+    lis 4, {SELECTION_HA}
+    stw 9, {SELECTION_LO}(4)
+pt_switch_frames:
+    stw 3, 0x1a00(31)
+    lis 4, {WANTED_ITEM_HA}
+    lwz 5, {WANTED_ITEM_LO}(4)       # r5 the request
+    lwz 6, 0x1a18(31)                # r6 a request dealt with already
+    lwz 11, 0x1a0c(31)               # r11 the weapon that stands for the gun as the last weapon, or 0
+    cmpwi 5, 0
+    bne pt_switch_asked
+    li 6, 0
+    b pt_switch_held
+pt_switch_asked:
+    cmpwi 5, {ITEM_GUN}
+    beq pt_switch_gun
+    cmpwi 5, {ITEM_GUN_UP}
+    bne pt_switch_other
+pt_switch_gun:                       # the page chose the gun: it comes out over what he holds, nothing is switched
+    li 8, 1
+    li 5, 0
+    stw 5, {WANTED_ITEM_LO}(4)
+    li 6, 0
+    # the HUD's weapon panel is decided as the menu closes: by then the weapon under the gun has to
+    # show no ammunition again (pt_model does the same, too late for this)
+    lwz 9, 0x4e8(31)
+    cmpwi 9, 0
+    bne pt_switch_held
+    lwz 9, 0x40c(31)
+    cmpwi 9, 0
+    bne pt_switch_held
+    cmpwi 7, 0
+    beq pt_switch_held
+    mulli 9, 7, {ITEM_ROW_SIZE}
+    lis 10, {ITEM_ROW_HA}
+    addi 10, 10, {ITEM_ROW_LO}
+    add 9, 9, 10
+    lhz 10, {ROW_AMMO_PACK}(9)
+    stw 10, 0x4ec(31)
+    li 10, 0
+    sth 10, {ROW_AMMO_PACK}(9)
+    stw 9, 0x4e8(31)
+    b pt_switch_held
+pt_switch_other:
+    cmpw 5, 6
+    beq pt_switch_held
+    cmpwi 3, {MODE_PAUSE}
+    bne pt_switch_play
+    # paused: the page asks for its choice as it closes (it asks for the weapon in hand on opening)
+    cmpw 5, 9
+    bne pt_switch_held
+    mr 6, 5                          # dealt with: it stays there until the game goes on
+    li 8, 0
+    cmpw 5, 7
+    beq pt_switch_held
+    li 11, 0                         # another weapon chosen: Triangle twice is the game's own again
+    b pt_switch_held
+pt_switch_play:
+    mr 6, 5
+    cmpwi 8, 0
+    beq pt_switch_forget
+    li 8, 0                          # a request for another weapon puts the gun away
+    b pt_switch_held
+pt_switch_forget:
+    lwz 12, 0x1a10(31)
+    cmpw 5, 12
+    beq pt_switch_held
+    li 11, 0                         # a switch to anything else: the gun is no longer the last weapon
+pt_switch_held:
+    # Triangle twice switches with no request in WANTED: the weapon in hand tells
+    lwz 4, 0x1a1c(31)                # r4 in hand last time
+    stw 7, 0x1a1c(31)
+    lwz 12, 0x1a14(31)               # r12 the weapon under the gun
+    cmpwi 7, 0
+    beq pt_switch_edge
+    cmpwi 8, 0
+    beq pt_switch_back
+    cmpwi 12, 0
+    bne pt_switch_under
+    mr 12, 7
+    b pt_switch_edge
+pt_switch_under:
+    cmpw 7, 12
+    beq pt_switch_edge
+    li 8, 0                          # another weapon came under the gun: it was switched to
+    b pt_switch_edge
+pt_switch_back:
+    cmpw 7, 4
+    beq pt_switch_edge
+    cmpwi 11, 0
+    beq pt_switch_edge
+    cmpw 7, 11
+    bne pt_switch_edge
+    li 8, 1                          # switched to the weapon that stands for the gun: the gun
+    mr 12, 7
+    li 11, 0
+pt_switch_edge:
+    stw 6, 0x1a18(31)
+    stw 8, 0x404(31)
+    lwz 4, 0x1a08(31)
+    stw 8, 0x1a08(31)
+    cmpwi 8, 0
+    bne pt_switch_keep
+    cmpwi 4, 0
+    beq pt_switch_none
+    # just put away for another weapon: the game's last weapon is now the one that was under the gun,
+    # which stands for the gun until something else is chosen
+    mr 4, 5                          # what it was put away for: the request, or what he holds already
+    cmpwi 4, 0
+    bne pt_switch_target
+    mr 4, 7
+pt_switch_target:
+    li 11, 0
+    cmpwi 4, 0
+    beq pt_switch_none
+    cmpw 4, 12
+    beq pt_switch_none
+    mr 11, 12
+    stw 4, 0x1a10(31)
+pt_switch_none:
+    li 12, 0
+pt_switch_keep:
+    stw 12, 0x1a14(31)
+    stw 11, 0x1a0c(31)
     blr
 
 # The weapon pages' still pictures come from two files, read one after the other into memory the game
@@ -1209,6 +1416,7 @@ pt_pad:
     bne pt_pad_done
     lis 31, {STATE_HA}
     addi 31, 31, {STATE_LO}
+    bl pt_switch
     # a pad of the tools' own (tools/press.py), inside the game: nothing else on the machine sees it
     lwz 3, 0x418(31)
     lwz 4, 0x41c(31)
@@ -1825,6 +2033,37 @@ pt_travel:
     beq pt_no_fling
     addi 3, 3, -1
     stw 3, 0xc(31)
+    # Up and down: the game keeps its own fall speed, which tops out at about the speed he went in
+    # with, so a carried rise and the game's fall cancelled and he hung in the air for the whole
+    # flight (and rose while gliding). While a carried rise lasts, the game's fall is held at 0 and
+    # gravity takes the rise away instead (faster in the Heli-Pack's glide); a carried fall is the game's.
+    lis 3, {POOL_HA}
+    addi 3, 3, {POOL_LO}
+    lfs 1, 0x1c8(31)
+    lfs 3, {P_zero}(3)
+    lis 4, {HERO_VEL_Z_HA}
+    fcmpu 0, 1, 3
+    bgt pt_fling_rising
+    beq pt_fling_level
+    stfs 1, {HERO_VEL_Z_LO}(4)
+    stfs 3, 0x1c8(31)
+    b pt_fling_level
+pt_fling_rising:
+    stfs 3, {HERO_VEL_Z_LO}(4)
+    lfs 2, {P_hero_gravity}(3)
+    lis 5, {HERO_STATE_HA}
+    lwz 5, {HERO_STATE_LO}(5)
+    cmpwi 5, {GLIDE_STATE}
+    bne pt_fling_brake
+    lfs 2, {P_glide_brake}(3)
+pt_fling_brake:
+    fsubs 1, 1, 2
+    fcmpu 0, 1, 3
+    bge pt_fling_rise_set
+    fmr 1, 3
+pt_fling_rise_set:
+    stfs 1, 0x1c8(31)
+pt_fling_level:
     # a wall ahead ends the sideways part
     lis 3, {POOL_HA}
     addi 3, 3, {POOL_LO}
@@ -4329,7 +4568,7 @@ def pool(args):
                 ring=tuple(ring), world_up=(0.0, 0.0, 1.0, 0.0), steep=0.9, near_least=0.5, near_scale=1024.0,
                 white=texture(WHITE - 0xC0000000, 0x00040004, 16), one=1.0, half=0.5, zero=0.0, inner=0.93, outer=1.07,
                 chest=0.7, mesh=mesh_block(), ray_aiming=0.5, ray_edge=1.0, three=3.0, cam_step=1.0 / 30, cam_height=2.0, cam_rise=0.12, cam_aligned=0.01, vec_tiny=0.0001, at_a=0.2447, at_b=0.0663,
-                quarter_pi=math.pi / 4, half_pi=math.pi / 2, pi=math.pi, fall_start=-0.3, fall_gain=0.012, mob_gravity=0.012,
+                quarter_pi=math.pi / 4, half_pi=math.pi / 2, pi=math.pi, fall_start=-0.3, fall_gain=0.012, mob_gravity=0.012, hero_gravity=0.006, glide_brake=0.012,
                 mob_foot=0.6, mob_reach=0.7, mob_reach_far=3.5, mob_behind=-0.5, mob_floor=1.4, mob_out=1.0,
                 vec_near=0.09, per_second=60.0,
                 # colours are AABBGGRR, 0x80 being full strength

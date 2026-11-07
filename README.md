@@ -7,7 +7,7 @@ on the wall.
 
 | Control | What it does |
 |---|---|
-| Triangle | Quick Select: the Portal Gun has a slot of its own. Pick it to take it out, pick any other weapon to put it away. With it out, two bars at the bottom of the screen light up blue and orange once that portal is placed |
+| Triangle | Quick Select: the Portal Gun has a slot of its own. Pick it to take it out, pick any other weapon to put it away. Triangle twice goes between the gun and the last weapon as for any other. With it out, two bars at the bottom of the screen light up blue and orange once that portal is placed |
 | L1 | Aim. With the gun out there is a blue and orange crosshair, and the shot goes through its middle |
 | Circle | Shoot the blue portal |
 | Square | Shoot the orange portal |
@@ -16,30 +16,54 @@ on the wall.
 - While the gun is out, Circle and Square do nothing else: no ammunition is used and the wrench stays
   put. Put the gun away and the weapon in Ratchet's hand is back as it was.
 - With the gun out the HUD's weapon panel is hidden; the weapon behind it comes back with its ammunition as it was.
-- The gun takes the Clank Zapper's place: its tile on the Weapons page, with its own name, icon and picture, and its slot in the Quick Select. Every save owns it from the next level on, and it goes into the first free Quick Select slot. If all eight are taken, put it there on the pause menu's Quick Select page. The Zapper itself is gone while the mod is installed. The gun uses no ammunition.
+- The gun takes the Clank Zapper's place: its tile on the Weapons page, with its own name, icon and picture, where it can be equipped like any weapon, and its slot in the Quick Select. Every save owns it from the next level on, and it goes into the first free Quick Select slot. If all eight are taken, put it there on the pause menu's Quick Select page. The Zapper itself is gone while the mod is installed. The gun uses no ammunition.
 - With one portal up it is a solid disc; with both up you can see through them.
 
 Everything was made and tested on RPCS3 under Linux. It has not been tried on a console.
 
-## Patching the game
+## Installation
 
-You need Python 3 and RC2's **decrypted** executable: in RPCS3, *Utilities > Decrypt PS3 Binaries*
-on `PS3_GAME/USRDIR/RC2.ppu.self` of the Trilogy gives you `RC2.ppu.elf`.
+You need:
 
-```
-python patch.py /path/to/RC2.ppu.elf
-```
+- **RPCS3** with your own dump of **The Ratchet & Clank Trilogy**, European disc **BCES01503**
+  (*Ratchet & Clank Trilogy, The (Europe, Asia)*). Other versions have a different executable; the
+  patcher checks and refuses them.
+- **Python 3** (3.8 or newer). Nothing else: `patch.py` needs no packages. On Windows get it from
+  [python.org](https://www.python.org/downloads/) and tick *Add python.exe to PATH* while installing.
 
-Answer its questions. The first choice for the target replaces `RC2.ppu.self` next to the file and
-keeps the original as `RC2.ppu.self.bak`. Without questions:
-`python patch.py RC2.ppu.elf -o /path/to/USRDIR/RC2.ppu.self`.
+The mod ships as a patch file, not as a game file: it is applied to your own copy of the game.
 
-Then close RPCS3 completely and **boot the Trilogy, choosing Ratchet & Clank 2 on its menu**. With the
-mod installed, booting `RC2.ppu.self` directly works as well.
+1. **Download this repository**: *Code > Download ZIP* on GitHub and unpack it, or
+   `git clone https://github.com/Joe-GH-18/RAC-2-Mods.git`.
+2. **Find the game's folder.** In RPCS3, right-click the Trilogy in the game list and choose
+   *Open Install Folder*. It holds `PS3_GAME`; the file you need is `PS3_GAME/USRDIR/RC2.ppu.self`.
+3. **Decrypt it.** In RPCS3, *Utilities > Decrypt PS3 Binaries*, and pick that `RC2.ppu.self`. RPCS3
+   writes `RC2.ppu.elf` next to it, in `USRDIR`. Leave it there.
+4. **Run the patcher.** Open a terminal (on Windows: *Command Prompt*) in the unpacked repository folder
+   and run
 
-The patcher only accepts the one executable it was made for (it compares checksums).
+   ```
+   python patch.py "/path/to/PS3_GAME/USRDIR/RC2.ppu.elf"
+   ```
 
-**To undo it**, copy `RC2.ppu.self.bak` back over `RC2.ppu.self`.
+   (on Windows `py patch.py "C:\...\PS3_GAME\USRDIR\RC2.ppu.elf"`, on some Linux systems `python3`; you
+   can drag the file into the window to type its path). Answer its two questions: Enter for the mods
+   (the Portal Gun is the only one), and **1** for the target, `RC2.ppu.self` in the same folder. The
+   original is kept as `RC2.ppu.self.bak`.
+5. **Close RPCS3 completely** and start it again, then **boot the Trilogy and choose Ratchet & Clank 2** on
+   its menu. With the mod installed, booting `RC2.ppu.self` directly works as well. The first boot takes
+   longer, as RPCS3 compiles the changed executable again.
+6. **Load a save** and go to any planet: from the next level on the Portal Gun is in the Quick Select
+   (Triangle) and on the Weapons page, in the Clank Zapper's place.
+
+Without questions, all in one line: `python patch.py RC2.ppu.elf -o /path/to/USRDIR/RC2.ppu.self`.
+
+The patcher checks the file it is given against the one executable it was made for (size and checksum)
+and tells you if it is still encrypted, from another region, or patched already. Running it again on a
+patched game is fine: it finds the original next to it.
+
+**To undo it**, copy `RC2.ppu.self.bak` back over `RC2.ppu.self`. Saves made with the mod work without it:
+they simply own the Clank Zapper.
 
 ## Shooting the moon
 
